@@ -24,7 +24,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/libs/openxr/include
-    ${CMAKE_SOURCE_DIR}/libs/openvr/headers
+    ${CMAKE_SOURCE_DIR}/libs/openvr/include
     ${CMAKE_SOURCE_DIR}/libs/minhook/include
     ${CMAKE_SOURCE_DIR}/libs/imgui
 )
@@ -73,8 +73,14 @@ set(UI_SOURCES
     src/ui/VROverlay.cpp
 )
 
+# DLL Entry Point
+set(ENTRY_SOURCES
+    src/DllMain.cpp
+)
+
 # All sources
 set(ALL_SOURCES
+    ${ENTRY_SOURCES}
     ${CORE_SOURCES}
     ${RUNTIME_SOURCES}
     ${RENDERING_SOURCES}
@@ -167,9 +173,23 @@ install(TARGETS GTA5VR
     LIBRARY DESTINATION lib
 )
 
+if(GTA5VR_BUILD_INJECTOR)
+    install(TARGETS GTA5VR_Injector
+        RUNTIME DESTINATION bin
+    )
+endif()
+
 install(FILES
     config/GTA5VR.ini
     DESTINATION config
+)
+
+install(FILES
+    README.md
+    docs/INSTALLATION.md
+    docs/CONFIGURATION.md
+    docs/TROUBLESHOOTING.md
+    DESTINATION docs
 )
 
 install(DIRECTORY shaders/
