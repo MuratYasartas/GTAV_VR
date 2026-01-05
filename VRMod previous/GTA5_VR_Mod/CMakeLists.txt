@@ -48,6 +48,7 @@ set(RUNTIME_SOURCES
 # Source files - Rendering
 set(RENDERING_SOURCES
     src/rendering/StereoRenderer.cpp
+    src/rendering/SwapchainManager.cpp
     src/rendering/RenderModes/NativeStereo.cpp
     src/rendering/RenderModes/SynchronizedSequential.cpp
     src/rendering/RenderModes/AlternatingEyeRendering.cpp
@@ -56,21 +57,29 @@ set(RENDERING_SOURCES
 # Source files - Injection
 set(INJECTION_SOURCES
     src/injection/DX11Hook.cpp
+    src/injection/ShaderInterceptor.cpp
+    src/injection/RAGEEngineHook.cpp
 )
 
 # Source files - Input
 set(INPUT_SOURCES
     src/input/VRInputManager.cpp
+    src/input/HeadTracking.cpp
+    src/input/MotionController.cpp
 )
 
 # Source files - Camera
 set(CAMERA_SOURCES
     src/camera/VRCamera.cpp
+    src/camera/CutsceneHandler.cpp
+    src/camera/VehicleCamera.cpp
 )
 
 # Source files - UI
 set(UI_SOURCES
     src/ui/VROverlay.cpp
+    src/ui/SettingsMenu.cpp
+    src/ui/HUDProjection.cpp
 )
 
 # DLL Entry Point
