@@ -26,22 +26,7 @@
 
 #include <DirectXMath.h>
 
-#include <cstdio>
-#include <stdarg.h>
-
 #include <Windows.h>
-
-inline void FLOGSTRF(char* format, ...)
-{
-  va_list args;
-  va_start(args, format);
-
-  FILE* fp = fopen("gtavrInjectLog.txt", "a");
-  vfprintf(fp, format, args);
-  fclose(fp);
-
-  va_end(args);
-};
 
 using namespace DirectX;
 
@@ -220,7 +205,7 @@ public:
     float&      operator[](int index);                  // subscript operator v[0], v[1]
 
 
-    inline Matrix4::XMFLOAT3 GetPosition() {
+    inline Matrix4::XMFLOAT3 GetPosition() const {
       auto pos = *this;
 
       XMVECTOR result = XMVector3Transform(XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f), pos.transpose().getDXMatrix());
@@ -263,7 +248,7 @@ public:
       return normalized;
     }
 
-    inline Matrix4::XMFLOAT3 GetForwardVector(float rx = 0.0f, float ry = 0.0f, float rz = 0.0f) {
+    inline Matrix4::XMFLOAT3 GetForwardVector(float rx = 0.0f, float ry = 0.0f, float rz = 0.0f) const {
       Matrix4 mat = Matrix4(*this);
 
       Matrix4 rotate;
@@ -284,7 +269,7 @@ public:
       return forward;
     };
 
-    inline Matrix4::XMFLOAT3 GetUpVector(float rx = 0.0f, float ry = 0.0f, float rz = 0.0f) {
+    inline Matrix4::XMFLOAT3 GetUpVector(float rx = 0.0f, float ry = 0.0f, float rz = 0.0f) const {
       Matrix4 mat = Matrix4(*this);
 
       Matrix4 rotate;
@@ -305,7 +290,7 @@ public:
       return up;
     };
 
-    inline Matrix4::XMFLOAT3 GetAngles(float rx = 0.0f, float ry = 0.0f, float rz = 0.0f) {
+    inline Matrix4::XMFLOAT3 GetAngles(float rx = 0.0f, float ry = 0.0f, float rz = 0.0f) const {
       auto forward = GetForwardVector(rx, ry, rz);
       auto up = GetUpVector(rx, ry, rz);
 

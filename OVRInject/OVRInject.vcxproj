@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -22,32 +22,32 @@
     <ProjectGuid>{3F9A3015-DAE3-4352-AF17-74B127E1C813}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>OVRInject</RootNamespace>
-    <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v120</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -87,11 +87,14 @@
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;OVRINJECT_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>HAS_IMGUI;WIN32;_DEBUG;_WINDOWS;_USRDLL;OVRINJECT_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)\OVRInject;$(SolutionDir)\ThirdParty\minhook\include;$(SolutionDir)\ThirdParty\minhook\src;$(SolutionDir)\ThirdParty\minhook\src\HDE;$(SolutionDir)\ThirdParty\openvr\headers;$(SolutionDir)\ThirdParty\openxr\include;$(SolutionDir)\ThirdParty\imgui;$(SolutionDir)\ThirdParty\imgui\backends;$(SolutionDir)\ThirdParty\glew;$(SolutionDir)\ThirdParty\readerwriterqueue</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>d3dcompiler.lib;d3d11.lib;opengl32.lib;glu32.lib;openvr_api.lib;openxr_loader.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ThirdParty\;$(SolutionDir)\ThirdParty\openxr\lib;$(SolutionDir)\ThirdParty\openxr\lib\$(Platform);$(SolutionDir)\ThirdParty\openvr\lib\$(Platform)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -100,17 +103,17 @@
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>GLEW_STATIC;_DEBUG;_WINDOWS;_USRDLL;OVRINJECT_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)\OVRInject;$(SolutionDir)\ThirdParty\minhook\include;$(SolutionDir)\ThirdParty\openvr\headers;$(SolutionDir)\ThirdParty\glew;$(SolutionDir)\ThirdParty\readerwriterqueue</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>HAS_IMGUI;_DEBUG;_WINDOWS;_USRDLL;OVRINJECT_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)\OVRInject;$(SolutionDir)\ThirdParty\minhook\include;$(SolutionDir)\ThirdParty\minhook\src;$(SolutionDir)\ThirdParty\minhook\src\HDE;$(SolutionDir)\ThirdParty\openvr\headers;$(SolutionDir)\ThirdParty\openxr\include;$(SolutionDir)\ThirdParty\imgui;$(SolutionDir)\ThirdParty\imgui\backends;$(SolutionDir)\ThirdParty\glew;$(SolutionDir)\ThirdParty\readerwriterqueue</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3dcompiler.lib;d3d11.lib;opengl32.lib;glu32.lib;glew32s.lib;openvr_api.lib;d3d11.lib;libMinHook.x64.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(SolutionDir)\ThirdParty\</AdditionalLibraryDirectories>
+      <AdditionalDependencies>d3dcompiler.lib;d3d11.lib;opengl32.lib;glu32.lib;openvr_api.lib;openxr_loader.lib;d3d11.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ThirdParty\;$(SolutionDir)\ThirdParty\openxr\lib;$(SolutionDir)\ThirdParty\openxr\lib\$(Platform);$(SolutionDir)\ThirdParty\openvr\lib\$(Platform)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
-      <Command>copy "C:\dev\GTAVOVR\x64\Debug\OVRInject.dll" "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto V\OVRInject.dll"</Command>
+      <Command>if defined GTAV_INSTALL_DIR copy /Y "$(TargetPath)" "%GTAV_INSTALL_DIR%\OVRInject.dll" &amp; if defined GTAV_INSTALL_DIR if exist "$(SolutionDir)ThirdParty\openvr\bin\$(Platform)\openvr_api.dll" copy /Y "$(SolutionDir)ThirdParty\openvr\bin\$(Platform)\openvr_api.dll" "%GTAV_INSTALL_DIR%\openvr_api.dll" &amp; if defined GTAV_INSTALL_DIR if exist "$(SolutionDir)ThirdParty\openxr\bin\$(Platform)\openxr_loader.dll" copy /Y "$(SolutionDir)ThirdParty\openxr\bin\$(Platform)\openxr_loader.dll" "%GTAV_INSTALL_DIR%\openxr_loader.dll"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -121,13 +124,16 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;OVRINJECT_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>HAS_IMGUI;WIN32;NDEBUG;_WINDOWS;_USRDLL;OVRINJECT_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)\OVRInject;$(SolutionDir)\ThirdParty\minhook\include;$(SolutionDir)\ThirdParty\minhook\src;$(SolutionDir)\ThirdParty\minhook\src\HDE;$(SolutionDir)\ThirdParty\openvr\headers;$(SolutionDir)\ThirdParty\openxr\include;$(SolutionDir)\ThirdParty\imgui;$(SolutionDir)\ThirdParty\imgui\backends;$(SolutionDir)\ThirdParty\glew;$(SolutionDir)\ThirdParty\readerwriterqueue</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>d3dcompiler.lib;d3d11.lib;opengl32.lib;glu32.lib;openvr_api.lib;openxr_loader.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ThirdParty\;$(SolutionDir)\ThirdParty\openxr\lib;$(SolutionDir)\ThirdParty\openxr\lib\$(Platform);$(SolutionDir)\ThirdParty\openvr\lib\$(Platform)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -138,42 +144,62 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>GLEW_STATIC;NDEBUG;_WINDOWS;_USRDLL;OVRINJECT_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)\OVRInject;$(SolutionDir)\ThirdParty\minhook\include;$(SolutionDir)\ThirdParty\openvr\headers;$(SolutionDir)\ThirdParty\glew;$(SolutionDir)\ThirdParty\readerwriterqueue</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>HAS_IMGUI;NDEBUG;_WINDOWS;_USRDLL;OVRINJECT_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)\OVRInject;$(SolutionDir)\ThirdParty\minhook\include;$(SolutionDir)\ThirdParty\minhook\src;$(SolutionDir)\ThirdParty\minhook\src\HDE;$(SolutionDir)\ThirdParty\openvr\headers;$(SolutionDir)\ThirdParty\openxr\include;$(SolutionDir)\ThirdParty\imgui;$(SolutionDir)\ThirdParty\imgui\backends;$(SolutionDir)\ThirdParty\glew;$(SolutionDir)\ThirdParty\readerwriterqueue</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3dcompiler.lib;d3d11.lib;opengl32.lib;glu32.lib;glew32s.lib;openvr_api.lib;libMinHook.x64.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(SolutionDir)\ThirdParty\</AdditionalLibraryDirectories>
+      <AdditionalDependencies>d3dcompiler.lib;d3d11.lib;opengl32.lib;glu32.lib;openvr_api.lib;openxr_loader.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)\ThirdParty\;$(SolutionDir)\ThirdParty\openxr\lib;$(SolutionDir)\ThirdParty\openxr\lib\$(Platform);$(SolutionDir)\ThirdParty\openvr\lib\$(Platform)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
-      <Command>copy "C:\dev\GTAVOVR\x64\Release\OVRInject.dll" "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto V\OVRInject.dll"</Command>
+      <Command>if defined GTAV_INSTALL_DIR copy /Y "$(TargetPath)" "%GTAV_INSTALL_DIR%\OVRInject.dll" &amp; if defined GTAV_INSTALL_DIR if exist "$(SolutionDir)ThirdParty\openvr\bin\$(Platform)\openvr_api.dll" copy /Y "$(SolutionDir)ThirdParty\openvr\bin\$(Platform)\openvr_api.dll" "%GTAV_INSTALL_DIR%\openvr_api.dll" &amp; if defined GTAV_INSTALL_DIR if exist "$(SolutionDir)ThirdParty\openxr\bin\$(Platform)\openxr_loader.dll" copy /Y "$(SolutionDir)ThirdParty\openxr\bin\$(Platform)\openxr_loader.dll" "%GTAV_INSTALL_DIR%\openxr_loader.dll"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="D3DHook\D3DHooks.hpp" />
+    <ClInclude Include="D3DHook\D3DHooks_VRManager.hpp" />
+    
     <ClInclude Include="Detour\D3D11DetourManager.hpp" />
-    <ClInclude Include="Detour\DetouredFuncs.hpp" />
-    <ClInclude Include="Detour\DetourManager.hpp" />
+    <ClInclude Include="Game\GtaCameraFov.hpp" />
+    <ClInclude Include="Game\GtaCameraHook.hpp" />
+    <ClInclude Include="Game\GtaGameState.hpp" />
+    <ClInclude Include="Game\PatternScanner.hpp" />
     <ClInclude Include="Log.hpp" />
+    <ClInclude Include="Overlay\OpenVROverlaySurface.hpp" />
+    <ClInclude Include="Overlay\OverlaySurface.hpp" />
+    <ClInclude Include="Overlay\VirtualScreen.hpp" />
+    <ClInclude Include="OpenXR\XRActionManager.hpp" />
+    <ClInclude Include="OpenXR\XRCore.hpp" />
+    <ClInclude Include="OpenXR\XRFrameManager.hpp" />
+    <ClInclude Include="OpenXR\XRGraphicsBinding.hpp" />
+    <ClInclude Include="OpenXR\XRHMDSupport.hpp" />
+    <ClInclude Include="OpenXR\XRInstance.hpp" />
+    <ClInclude Include="OpenXR\XROverlay.hpp" />
+    <ClInclude Include="OpenXR\XROverlayUI.hpp" />
+    <ClInclude Include="OpenXR\XRSession.hpp" />
+    <ClInclude Include="OpenXR\XRSwapchain.hpp" />
+    <ClInclude Include="OpenXR\XRViewManager.hpp" />
     <ClInclude Include="targetver.h" />
     <ClInclude Include="Vive\HMDRenderer.hpp" />
-    <ClInclude Include="Vive\HMDSupport.hpp" />
+    
     <ClInclude Include="Vive\Math\Helpers.hpp" />
     <ClInclude Include="Vive\Math\Matrices.h" />
     <ClInclude Include="Vive\Math\Vectors.h" />
-    <ClInclude Include="Vive\Scene\CameraObject.hpp" />
-    <ClInclude Include="Vive\Scene\Object.hpp" />
-    <ClInclude Include="Vive\Scene\RenderScene.hpp" />
-    <ClInclude Include="Vive\Scene\SimpleShader.hpp" />
-    <ClInclude Include="Vive\TrackedController.hpp" />
+    <ClInclude Include="VR\IVRBackend.hpp" />
+    <ClInclude Include="VR\OpenVRBackend.hpp" />
+    <ClInclude Include="VR\OpenXRBackend.hpp" />
+    <ClInclude Include="VR\SharedSettings.hpp" />
+    <ClInclude Include="VR\VRManager.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Detour\D3D11DetourManager.cpp" />
-    <ClCompile Include="Detour\DetourManager.cpp" />
+    <ClCompile Include="Game\GtaCameraFov.cpp" />
+    <ClCompile Include="Game\GtaCameraHook.cpp" />
+    <ClCompile Include="Game\GtaGameState.cpp" />
+    <ClCompile Include="Game\PatternScanner.cpp" />
     <ClCompile Include="dllmain.cpp">
       <CompileAsManaged Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</CompileAsManaged>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
@@ -189,12 +215,46 @@
       </PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="Log.cpp" />
+    <ClCompile Include="..\ThirdParty\minhook\src\buffer.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\minhook\src\hook.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\minhook\src\trampoline.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\minhook\src\HDE\hde32.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\minhook\src\HDE\hde64.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\imgui\imgui.cpp" />
+    <ClCompile Include="..\ThirdParty\imgui\imgui_draw.cpp" />
+    <ClCompile Include="..\ThirdParty\imgui\imgui_tables.cpp" />
+    <ClCompile Include="..\ThirdParty\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="..\ThirdParty\imgui\backends\imgui_impl_dx11.cpp" />
+    <ClCompile Include="..\ThirdParty\imgui\backends\imgui_impl_win32.cpp" />
+    <ClCompile Include="Overlay\OpenVROverlaySurface.cpp" />
+    <ClCompile Include="Overlay\VirtualScreen.cpp" />
+    <ClCompile Include="OpenXR\XRActionManager.cpp" />
+    <ClCompile Include="OpenXR\XRCore.cpp" />
+    <ClCompile Include="OpenXR\XRFrameManager.cpp" />
+    <ClCompile Include="OpenXR\XRGraphicsBinding.cpp" />
+    <ClCompile Include="OpenXR\XRHMDSupport.cpp" />
+    <ClCompile Include="OpenXR\XRInstance.cpp" />
+    <ClCompile Include="OpenXR\XROverlay.cpp" />
+    <ClCompile Include="OpenXR\XROverlayUI.cpp" />
+    <ClCompile Include="OpenXR\XRSession.cpp" />
+    <ClCompile Include="OpenXR\XRSwapchain.cpp" />
+    <ClCompile Include="OpenXR\XRViewManager.cpp" />
     <ClCompile Include="Vive\HMDRenderer.cpp" />
-    <ClCompile Include="Vive\HMDSupport.cpp" />
+    
     <ClCompile Include="Vive\Math\Matrices.cpp" />
-    <ClCompile Include="Vive\Scene\Object.cpp" />
-    <ClCompile Include="Vive\Scene\RenderScene.cpp" />
-    <ClCompile Include="Vive\TrackedController.cpp" />
+    <ClCompile Include="VR\OpenVRBackend.cpp" />
+    <ClCompile Include="VR\OpenXRBackend.cpp" />
+    <ClCompile Include="VR\VRManager.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

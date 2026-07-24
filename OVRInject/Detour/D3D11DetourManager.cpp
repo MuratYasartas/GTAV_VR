@@ -2,7 +2,7 @@
 
 #include "D3D11DetourManager.hpp"
 
-#include "D3DHook/D3DHooks.hpp"
+#include "D3DHook/D3DHooks_VRManager.hpp"
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -24,17 +24,8 @@ D3D11DetourManager::D3D11DetourManager()
 	dxgiModule = LoadLibrary(L"dxgi.dll");
 	LOGSTRF("DXGIModule: 0x%p\n", dxgiModule);
 
-	MakeDetour<Detour_D3D11CreateDevice>(
-		GetProcAddress(d3d11Module, "D3D11CreateDevice")
-	);
-
-	MakeDetour<Detour_D3D11CreateDeviceAndSwapChain>(
-		GetProcAddress(d3d11Module, "D3D11CreateDeviceAndSwapChain")
-	);
-
-	MakeDetour<Detour_CreateDXGIFactory>(
-		GetProcAddress(dxgiModule, "CreateDXGIFactory")
-	);
+	// Use the VRMgr initialization which sets up hooks internally
+	VRMgr::Initialize();
 }
 
 D3D11DetourManager::~D3D11DetourManager()

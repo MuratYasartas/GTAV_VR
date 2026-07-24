@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -15,46 +15,71 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Detour\DetourManager.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Detour\DetouredFuncs.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="D3DHook\D3DHooks.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="Detour\D3D11DetourManager.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D3DHook\D3DHooks_VRManager.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\GtaCameraFov.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\GtaCameraHook.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\PatternScanner.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Log.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Vive\Scene\CameraObject.hpp">
+    <ClInclude Include="Overlay\OverlaySurface.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Vive\Scene\Object.hpp">
+    <ClInclude Include="Overlay\OpenVROverlaySurface.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Vive\Scene\RenderScene.hpp">
+    <ClInclude Include="OpenXR\XRActionManager.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Vive\Scene\SimpleShader.hpp">
+    <ClInclude Include="OpenXR\XRCore.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XRFrameManager.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XRGraphicsBinding.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XRHMDSupport.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XRInstance.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XROverlay.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XROverlayUI.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XRSession.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XRSwapchain.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="OpenXR\XRViewManager.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Vive\HMDRenderer.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Vive\HMDSupport.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
+    
     <ClInclude Include="Vive\Math\Matrices.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Vive\Math\Vectors.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Vive\TrackedController.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Vive\Math\Helpers.hpp">
@@ -63,36 +88,109 @@
     <ClInclude Include="targetver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="VR\IVRBackend.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="VR\OpenVRBackend.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="VR\OpenXRBackend.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="VR\SharedSettings.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="VR\VRManager.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Detour\DetourManager.cpp">
+    <ClCompile Include="Detour\D3D11DetourManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Detour\D3D11DetourManager.cpp">
+    <ClCompile Include="Game\GtaCameraFov.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\GtaCameraHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\PatternScanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Log.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Vive\Scene\Object.cpp">
+    <ClCompile Include="..\ThirdParty\imgui\imgui.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Vive\Scene\RenderScene.cpp">
+    <ClCompile Include="..\ThirdParty\imgui\imgui_draw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\imgui\imgui_tables.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\imgui\imgui_widgets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\imgui\backends\imgui_impl_dx11.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ThirdParty\imgui\backends\imgui_impl_win32.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Overlay\OpenVROverlaySurface.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRActionManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRCore.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRFrameManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRGraphicsBinding.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRHMDSupport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRInstance.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XROverlay.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XROverlayUI.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRSession.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRSwapchain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="OpenXR\XRViewManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Vive\HMDRenderer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Vive\HMDSupport.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
+    
     <ClCompile Include="Vive\Math\Matrices.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Vive\TrackedController.cpp">
+    <ClCompile Include="VR\OpenVRBackend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="VR\OpenXRBackend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="VR\VRManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
