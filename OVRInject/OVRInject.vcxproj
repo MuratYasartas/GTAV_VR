@@ -163,9 +163,11 @@
     <ClInclude Include="D3DHook\D3DHooks_VRManager.hpp" />
     
     <ClInclude Include="Detour\D3D11DetourManager.hpp" />
+    <ClInclude Include="Game\BuildManifest.hpp" />
     <ClInclude Include="Game\GtaCameraFov.hpp" />
     <ClInclude Include="Game\GtaCameraHook.hpp" />
     <ClInclude Include="Game\GtaGameState.hpp" />
+    <ClInclude Include="Game\OnlineGuard.hpp" />
     <ClInclude Include="Game\PatternScanner.hpp" />
     <ClInclude Include="Log.hpp" />
     <ClInclude Include="Overlay\OpenVROverlaySurface.hpp" />
@@ -196,9 +198,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Detour\D3D11DetourManager.cpp" />
+    <ClCompile Include="Game\BuildManifest.cpp" />
     <ClCompile Include="Game\GtaCameraFov.cpp" />
     <ClCompile Include="Game\GtaCameraHook.cpp" />
     <ClCompile Include="Game\GtaGameState.cpp" />
+    <ClCompile Include="Game\OnlineGuard.cpp" />
     <ClCompile Include="Game\PatternScanner.cpp" />
     <ClCompile Include="dllmain.cpp">
       <CompileAsManaged Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</CompileAsManaged>
