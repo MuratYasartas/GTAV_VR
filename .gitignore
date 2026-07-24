@@ -296,3 +296,5 @@ VRMod previous/
 d3d9.dll
 cudart64_12.dll
 openvr_api.dll
+samples/*/golden_run_a/
+samples/*/golden_run_*/
