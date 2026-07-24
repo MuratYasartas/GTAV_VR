@@ -276,3 +276,23 @@ _Pvt_Extensions
 *.exe
 *.out
 *.app
+
+# --- Project-specific (GTAV VR) ---
+# Build intermediates/outputs not covered above
+build_int/
+build_out/
+build_solution_out/
+samples/*/golden_out/
+
+# Third-party prior-art / reference material — NEVER commit (copyright, see docs/LEGAL.md)
+GTAV_REAL_mod/
+GTAV_REAL_mod_Decompiled/
+Lukrossmod/
+Lukrossmod_Decompiled/
+GTAVE_Test_Setup/
+RealRepo/
+tmp/
+VRMod previous/
+d3d9.dll
+cudart64_12.dll
+openvr_api.dll
