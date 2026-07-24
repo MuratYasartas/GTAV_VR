@@ -30,5 +30,8 @@ D3D11DetourManager::D3D11DetourManager()
 
 D3D11DetourManager::~D3D11DetourManager()
 {
-
+	// Ordered unload path (DLL_PROCESS_DETACH / FreeLibrary): disable the
+	// Present hook, drain in-flight hooked frames, shut down VR, then tear
+	// down MinHook. Idempotent; safe to run even if nothing was hooked.
+	VRMgr::UninstallHooks();
 }

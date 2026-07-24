@@ -1,6 +1,6 @@
 #pragma once
 
-void LOGSTRF(char* format, ...);
-void LOGWNDF(char* format, ...);
-void LOGOUTF(char* format, ...);
-void LOGFATALF(char* format, ...);
+void LOGSTRF(const char* format, ...);
+void LOGWNDF(const char* format, ...);
+void LOGOUTF(const char* format, ...);
+void LOGFATALF(const char* format, ...);

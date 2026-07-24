@@ -73,6 +73,7 @@ struct VRSettings {
     bool asyncReprojection = true;
     float renderScale = 1.0f;
     float gameResolutionScale = 1.0f;
+    bool desktopMirrorSyncOverride = false;
 
     // Depth reprojection (fake stereo)
     bool reprojectionEnabled = true;

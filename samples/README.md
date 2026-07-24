@@ -113,8 +113,9 @@ env GTAVR_TARGET_PROCESS=D3D11Cube.exe GTAV_INSTALL_DIR=<dir with OVRInject.dll>
 
 ## Known hacks / TODO
 
-- **grcWindow**: the window class is named `grcWindow` (GTA V's class)
-  because the mod's ImGui init currently does `FindWindowA("grcWindow")`.
-  **TODO**: remove this hack once the mod resolves the target window from
-  the swapchain (`IDXGISwapChain::GetDesc` → `OutputWindow`) instead of a
-  hardcoded class name, then rename the class to something slice-specific.
+- **grcWindow** (RESOLVED, kept harmlessly): the window class was named
+  `grcWindow` because the mod's ImGui init used `FindWindowA("grcWindow")`.
+  Since the Phase-3 robustness wave the mod resolves the target window from
+  the swapchain (`IDXGISwapChain::GetDesc` → `OutputWindow`) and ImGui input
+  resolves by process ID, so the class name no longer matters. Left as-is;
+  rename only if it ever collides with the real game.

@@ -66,9 +66,9 @@ design flaws.
 |---|---|---|
 | **No GTA Online / multiplayer detection anywhere** — per-frame memory writes with zero online guard | **P0 — Hard Constraint 1 violation** | 7 |
 | Stereo is fake: same 2D backbuffer to both eyes, or depth-displaced reprojection; no per-eye scene render | P0 — the core feature | 4 |
-| No `ResizeBuffers` / device-lost / alt-tab handling; resize code explicitly disabled (`D3DHooks_VRManager.hpp:1004-1035`) | P1 | 3 |
-| No unload path: `DLL_PROCESS_DETACH` empty; `ShutdownVR` can run MinHook teardown mid-hook then re-init loop | P1 | 3 |
-| Present hook only lands if device created via `D3D11CreateDeviceAndSwapChain` after injection; no existing-swapchain scan | P2 | 3 |
+| ~~No `ResizeBuffers` / device-lost / alt-tab handling~~ DONE (wave 2): `ResizeBuffers` vtable hook + lazy recreate, device-lost one-shot re-init, minimized/occluded pass-through; mod-initiated game-resolution scaling stays disabled (game holds buffer refs) | P1 | 3 |
+| ~~No unload path~~ DONE (wave 2): ordered `DLL_PROCESS_DETACH` teardown (disable hooks → drain in-flight frames → VR/overlay shutdown → MinHook teardown); `ShutdownVR` idempotent, no MinHook calls mid-hook | P1 | 3 |
+| Present hook only lands if device created via `D3D11CreateDeviceAndSwapChain` after injection — mitigated (wave 2): `D3D11CreateDevice` + `CreateDXGIFactory1/2` → `IDXGIFactory::CreateSwapChain` hooks + 30 s watchdog that logs and stays inert; no scan of pre-existing swapchains | P2 | 3 |
 | Camera matrix written from Present thread, no sync with game writes → jitter/races | P1 | 4/5 |
 | Unsafe logging (`vsprintf` into guessed buffers, `LOGFATALF` kills the game) | P2 | 3 |
 | Dead generations still compiled: `Vive/Scene/`, `TrackedController`, `Detour/` wrapper, gutted `D3DHooks.hpp`/`HMDSupport.*`, dead shader headers | hygiene | 1 |

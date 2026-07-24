@@ -18,9 +18,18 @@ DWORD CheckProcessNameThread(void* userdata)
 		return 0;
 	}
 
-  // Found GTA5.exe, inject main DLL
-  LOGWNDF("Found GTA5.exe with shim DLL, injecting main DLL..\n"); 
-	LoadLibrary(L"E:\\Games\\Steam\\steamapps\\common\\Grand Theft Auto V\\OVRInject.dll");
+  // Found GTA5.exe, inject main DLL from the same folder as the shim.
+  LOGWNDF("Found GTA5.exe with shim DLL, injecting main DLL..\n");
+	wchar_t modulePath[MAX_PATH] = {};
+	if (GetModuleFileNameW((HMODULE)userdata, modulePath, MAX_PATH)) {
+		std::wstring dllPath(modulePath);
+		size_t pos = dllPath.find_last_of(L"\\/");
+		if (pos != std::wstring::npos) {
+			dllPath = dllPath.substr(0, pos);
+		}
+		dllPath += L"\\OVRInject.dll";
+		LoadLibraryW(dllPath.c_str());
+	}
 
 	return 0;
 }

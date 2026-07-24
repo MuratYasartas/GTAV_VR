@@ -1042,6 +1042,7 @@ bool XROverlayUI::LoadSettings(const char* filename) {
         else if (key == "asyncReprojection") settings_.asyncReprojection = (value == "1" || value == "true");
         else if (key == "renderScale") settings_.renderScale = std::stof(value);
         else if (key == "gameResolutionScale") settings_.gameResolutionScale = std::stof(value);
+        else if (key == "desktopMirrorSyncOverride") settings_.desktopMirrorSyncOverride = (value == "1" || value == "true");
         else if (key == "reprojectionEnabled") settings_.reprojectionEnabled = (value == "1" || value == "true");
         else if (key == "reprojectionIPD") settings_.reprojectionIPD = std::stof(value);
         else if (key == "reprojectionDepthScale") settings_.reprojectionDepthScale = std::stof(value);
@@ -1127,6 +1128,7 @@ bool XROverlayUI::SaveSettings(const char* filename) {
     file << "asyncReprojection=" << (settings_.asyncReprojection ? "1" : "0") << "\n";
     file << "renderScale=" << settings_.renderScale << "\n\n";
     file << "gameResolutionScale=" << settings_.gameResolutionScale << "\n\n";
+    file << "desktopMirrorSyncOverride=" << (settings_.desktopMirrorSyncOverride ? "1" : "0") << "\n\n";
     file << "reprojectionEnabled=" << (settings_.reprojectionEnabled ? "1" : "0") << "\n";
     file << "reprojectionIPD=" << settings_.reprojectionIPD << "\n";
     file << "reprojectionDepthScale=" << settings_.reprojectionDepthScale << "\n";

@@ -20,8 +20,9 @@
 //     driven purely by the frame index (both frames of an L/R pair share
 //     the same rotation), never by a clock; the shared mapping is ignored.
 //
-// NOTE: the window class name is "grcWindow" on purpose — the mod's ImGui
-// init currently does FindWindowA("grcWindow"). See samples/README.md.
+// NOTE: the window class name "grcWindow" is a leftover from when the mod
+// located the window via FindWindowA("grcWindow"). The mod now resolves the
+// window from the swapchain desc, so the name is harmless. See samples/README.md.
 
 #include <Windows.h>
 
@@ -401,7 +402,7 @@ int main() {
         CreateDirectoryA(goldenDir.c_str(), nullptr);  // fine if it already exists
     }
 
-    // Window: class name MUST stay "grcWindow" for now (mod FindWindowA hack).
+    // Window class name is historical (see note at file top); any name works.
     HINSTANCE inst = GetModuleHandle(nullptr);
     WNDCLASSA wc = {};
     wc.lpfnWndProc = WndProc;
