@@ -35,9 +35,12 @@ over 60 s is a P0 defect, not a "settings suggestion".
 
 | Item | Where | Status |
 |---|---|---|
-| Frametime ring buffer + percentiles | PerfStats (Phase 8 wave) | pending wave 3 |
-| CSV export | PerfStats | pending wave 3 |
-| Overlay frametime/p99 display | settings overlay | pending wave 3 |
+| Frametime ring buffer + percentiles | `OVRInject/Perf/PerfStats` — 4096-sample Present-to-Present ring on the render thread, p50/p99/p99.9 + mean, `Record()` called from every `hookedPresent` | done |
+| Dropped-frame estimate | `PerfStats` — ring frames > 1.5× p50, per-second and window totals | done |
+| Engine section timers | `OVRInject/Stereo/StereoEngine` — QPC-timed camera-write / blit / submit accumulators fed into `PerfStats` | done |
+| CSV export | `PerfStats::ExportCsv` → `gtavr_perf.csv` (one row per second: timestamp, frames, p50, p99, p99.9, drops), on `ShutdownVR`/unload and on demand via F11 (polled on the render thread; the mod has no WndProc hook) | done |
+| Cross-thread perf mirrors | `VR::RuntimeStats` atomics (`fps`, `frametimeP50Ms/P99Ms/P999Ms`) updated once per second | done |
+| Overlay frametime/p99 display | read API landed: `PerfStats::GetSnapshot()` + RuntimeStats mirrors; overlay rendering itself is next wave | pending wave 4 |
 | Slice-app baseline (framework overhead only) | `samples/D3D11Cube` + PerfStats | pending wave 3 |
 
 ## 4. Results (UNVERIFIED — no hardware run yet)

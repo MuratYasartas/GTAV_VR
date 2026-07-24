@@ -37,6 +37,8 @@
 #include "../Overlay/VirtualScreen.hpp"
 #include "../OpenXR/XROverlayUI.hpp"
 #include "../Game/OnlineGuard.hpp"
+#include "../Stereo/StereoEngine.hpp"
+#include "../Perf/PerfStats.hpp"
 #include <atomic>
 #include <vector>
 
@@ -87,9 +89,6 @@ namespace VRMgr {
     bool first_present = true;
     bool using_openvr = false;
     bool overlay_visible = false;
-    VR::Eye current_eye = VR::Eye::Left;
-    VR::Eye next_eye = VR::Eye::Right;
-    int current_stereo_mode = static_cast<int>(VR::StereoMode::Reprojection);
     uint32_t base_swap_width = 0;
     uint32_t base_swap_height = 0;
     float current_game_scale = 1.0f;
@@ -1115,6 +1114,136 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         }
     }
 
+    // ---- StereoEngine ops ---------------------------------------------------
+    // These statics are the D3D mechanics the StereoEngine drives through
+    // Stereo::FrameServices op pointers. Policy (which eye, which mode) lives
+    // in the engine; the mechanics stay here, unchanged from the original
+    // inline hookedPresent code.
+
+    // Copy the current depth-stencil into a shader-readable texture for the
+    // Z3D path. Returns false when depth is unavailable (engine then blits).
+    static bool PrepareDepthForReprojection(ID3D11Device* device, ID3D11DeviceContext* context) {
+        bool depthReady = false;
+        ID3D11DepthStencilView* dsv = nullptr;
+        ID3D11RenderTargetView* current_rtv = nullptr;
+        context->OMGetRenderTargets(1, &current_rtv, &dsv);
+        if (dsv) {
+            depthReady = EnsureDepthResources(device, dsv);
+        }
+        if (!depthReady) {
+            static bool logged_depth_missing = false;
+            if (!logged_depth_missing) {
+                LOGSTR("D3DHooks_VRManager: Depth reprojection requested but depth unavailable, falling back to blit\n");
+                logged_depth_missing = true;
+            }
+        }
+        if (dsv) dsv->Release();
+        if (current_rtv) current_rtv->Release();
+        return depthReady;
+    }
+
+    // Backbuffer -> one eye target (blit shader when available, else the
+    // HMDRenderer copy path).
+    static void ProduceEyeFromBackbuffer(ID3D11Device* device,
+                                         ID3D11DeviceContext* context,
+                                         ID3D11Texture2D* pBuffer,
+                                         VR::Eye eye,
+                                         float eyeSign,
+                                         bool useUserAlignment) {
+        if (blit_pixel_shader_) {
+            RenderBlit(device, context, pBuffer, hmdRenderer->GetEyeRenderTarget(eye), eyeSign, useUserAlignment);
+        } else {
+            hmdRenderer->Render(eye, pBuffer);
+        }
+    }
+
+    // Produce the right eye from the same backbuffer: depth-displaced when
+    // useReprojection is set and the shader exists, else a plain blit/copy.
+    static void RenderRightEyeStereo(ID3D11Device* device,
+                                     ID3D11DeviceContext* context,
+                                     ID3D11Texture2D* pBuffer,
+                                     bool useReprojection) {
+        auto& reproSettings = VR::GetReprojectionSettings();
+
+        ID3D11Texture2D* rightEyeTexture = hmdRenderer->GetEyeTexture(VR::Eye::Right);
+        ID3D11RenderTargetView* rtv = hmdRenderer->GetEyeRenderTarget(VR::Eye::Right);
+        context->OMSetRenderTargets(1, &rtv, nullptr);
+
+        bool using_cached_srv = false;
+        ID3D11ShaderResourceView* color_srv = GetColorSRV(device, context, pBuffer, using_cached_srv);
+
+        if (useReprojection && reprojection_pixel_shader_) {
+            ApplyBlitStates(context);
+            context->VSSetShader(stereo_vertex_shader_, nullptr, 0);
+            context->PSSetShader(reprojection_pixel_shader_, nullptr, 0);
+
+            float imageScale = 1.0f;
+            float offsetX = 0.0f;
+            float offsetY = 0.0f;
+            GetImageTransform(1.0f, imageScale, offsetX, offsetY);
+
+            ReprojectionParams params = {};
+            params.u_ipd_offset = reproSettings.ipd.load();
+            params.u_depth_scale = reproSettings.depthScale.load();
+            params.u_depth_bias = reproSettings.depthBias.load();
+            params.u_image_scale = imageScale;
+            params.u_offset_x = offsetX;
+            params.u_offset_y = offsetY;
+            params.u_invert_depth = reproSettings.invertDepth.load() ? 1.0f : 0.0f;
+
+            context->UpdateSubresource(reprojection_constant_buffer_, 0, nullptr, &params, 0, 0);
+            context->PSSetConstantBuffers(0, 1, &reprojection_constant_buffer_);
+            context->PSSetConstantBuffers(1, 1, &vignette_constant_buffer_);
+
+            ID3D11ShaderResourceView* srvs[] = { color_srv, depth_srv_ };
+            context->PSSetShaderResources(0, 2, srvs);
+            context->PSSetSamplers(0, 1, &sampler_state_);
+
+            context->IASetInputLayout(nullptr);
+            context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context->Draw(3, 0);
+
+            ID3D11ShaderResourceView* null_srvs[] = { nullptr, nullptr };
+            context->PSSetShaderResources(0, 2, null_srvs);
+        } else {
+            if (blit_pixel_shader_) {
+                RenderBlit(device, context, pBuffer, rtv, 0.0f, false);
+            } else {
+                context->CopyResource(rightEyeTexture, pBuffer);
+            }
+        }
+
+        if (color_srv && !using_cached_srv) {
+            color_srv->Release();
+        }
+    }
+
+    // OpenVR overlay input + render + recenter plumbing (no-op on OpenXR).
+    static void UpdateOverlayOpenVRAndRecenter() {
+        if (using_openvr) {
+            VR::IVRBackend* backend = GetBackend();
+            if (!backend) {
+                return;
+            }
+            const auto& leftState = backend->GetControllerState(VR::Hand::Left);
+            const auto& rightState = backend->GetControllerState(VR::Hand::Right);
+            UpdateOverlayInputOpenVR(leftState, rightState);
+            RenderOverlayOpenVR();
+            if (overlay_ui && overlay_ui->ConsumeRecenterRequest()) {
+                backend->Recenter();
+                VR::GetViewSettings().snapYawOffsetDeg.store(0.0f);
+                VR::GetStereoSettings().recenterRequested.store(true);
+                VR::GetHeadLookSettings().recenterRequested.store(true);
+            }
+        }
+    }
+
+    static void ApplySnapTurningFromBackend(VR::IVRBackend* backend) {
+        if (backend) {
+            ApplySnapTurning(backend->GetControllerState(VR::Hand::Right));
+        }
+    }
+
     void ShutdownVR();
     void ReleaseVRResources();
 
@@ -1194,6 +1323,10 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                 LOGSTR("D3DHooks_VRManager: Creating camera hook\n");
                 cameraHook = new Game::GtaCameraHook(backend, cameraFov.get());
                 cameraHook->Hook();
+
+                // StereoEngine: resolve clip planes, cache the per-eye runtime
+                // projection, sync the runtime IPD into shared settings.
+                Stereo::StereoEngine::Get().Initialize(backend);
 
                 // Initialize game state detection
                 LOGSTR("D3DHooks_VRManager: Initializing game state detection\n");
@@ -1408,6 +1541,17 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             ~HookScopeGuard() { in_hook_count_.fetch_sub(1); }
         } hookScopeGuard;
 
+        // Phase 8 instrumentation: every hooked Present is recorded, including
+        // pass-through frames. F11 = on-demand CSV export (the mod installs no
+        // WndProc hook, so the hotkey is polled here on the render thread).
+        Perf::PerfStats::Get().Record();
+        static bool f11_was_down = false;
+        bool f11_down = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+        if (f11_down && !f11_was_down) {
+            Perf::PerfStats::Get().ExportCsv();
+        }
+        f11_was_down = f11_down;
+
         // Ordered unload in progress: pure pass-through.
         if (shutting_down_.load()) {
             return Original_PresentHook(pSwapChain, SyncInterval, Flags);
@@ -1453,259 +1597,31 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             return Original_PresentHook(pSwapChain, SyncInterval, Flags);
         }
 
-        bool shouldRender = backend->BeginFrame();
-        if (!shouldRender) {
-            return Original_PresentHook(pSwapChain, SyncInterval, Flags);
-        }
-        backend->UpdateControllers();
-        ApplySnapTurning(backend->GetControllerState(VR::Hand::Right));
+        // Phase 4: the stereo frame sequence (BeginFrame -> late-latch head
+        // pose -> mode policy -> produce eye(s) -> submit -> camera write ->
+        // EndFrame -> desktop mirror) lives in StereoEngine::OnPresent. This
+        // hook keeps the guard rails above (OnlineGuard, inert, init, resize,
+        // minimized) and the device-lost handling below; the D3D mechanics
+        // stay here as statics and are passed in as ops.
+        Stereo::FrameServices services;
+        services.backend = backend;
+        services.hmdRenderer = hmdRenderer;
+        services.cameraHook = cameraHook;
+        services.cameraFov = cameraFov.get();
+        services.gameState = gameState.get();
+        services.virtualScreen = virtualScreen.get();
+        services.usingOpenVR = using_openvr;
+        services.forceMirrorSync0 = force_mirror_sync0_;
+        services.originalPresent = Original_PresentHook;
+        services.applySnapTurning = &ApplySnapTurningFromBackend;
+        services.maybeResizeSwapchain = &MaybeResizeSwapchain;
+        services.updateVignette = &UpdateVignetteParams;
+        services.prepareDepth = &PrepareDepthForReprojection;
+        services.produceEye = &ProduceEyeFromBackbuffer;
+        services.renderRightEye = &RenderRightEyeStereo;
+        services.updateOverlay = &UpdateOverlayOpenVRAndRecenter;
 
-        bool cameraReady = cameraHook && cameraHook->IsReady();
-
-        if (cameraFov) {
-            cameraFov->Update(VR::GetFovSettings());
-        }
-
-        // Update game state detection
-        if (gameState) {
-            gameState->Update();
-        }
-
-        // Check if cutscene virtual screen should be active
-        bool showVirtualScreen = gameState && gameState->ShouldShowVirtualScreen();
-        if (!cameraReady) {
-            showVirtualScreen = false;
-        }
-        if (virtualScreen) {
-            virtualScreen->SetEnabled(showVirtualScreen);
-            if (showVirtualScreen) {
-                virtualScreen->Update();
-            }
-        }
-
-        auto& stereoSettings = VR::GetStereoSettings();
-        auto& reproSettings = VR::GetReprojectionSettings();
-        int stereoMode = stereoSettings.mode.load();
-        bool allowStereoRendering = cameraReady &&
-                                    !(gameState && (gameState->IsLoading() || gameState->IsInMenu())) &&
-                                    !showVirtualScreen;
-
-        bool wantAlternate = allowStereoRendering &&
-                            stereoMode == static_cast<int>(VR::StereoMode::AlternateEye);
-        bool wantReprojection = allowStereoRendering &&
-                                reproSettings.enabled.load() &&
-                                stereoMode == static_cast<int>(VR::StereoMode::Reprojection);
-        bool monoFallbackCopyBothEyes = !cameraReady && !showVirtualScreen;
-
-        static bool logged_camera_fallback = false;
-        if (!cameraReady && !logged_camera_fallback) {
-            LOGSTR("D3DHooks_VRManager: Camera hook not ready, using mono blit fallback until stereo engages\n");
-            logged_camera_fallback = true;
-        }
-
-        if (stereoMode != current_stereo_mode) {
-            current_stereo_mode = stereoMode;
-            current_eye = VR::Eye::Left;
-            next_eye = VR::Eye::Right;
-        }
-
-        float renderScale = reproSettings.renderScale.load();
-        if (hmdRenderer) {
-            hmdRenderer->Resize(renderScale);
-        }
-
-        MaybeResizeSwapchain(pSwapChain);
-
-        // Get backbuffer
-        ID3D11Texture2D* pBuffer;
-        HRESULT hr = pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBuffer);
-        if (FAILED(hr)) {
-            return Original_PresentHook(pSwapChain, SyncInterval, Flags);
-        }
-
-        static bool logged_backbuffer = false;
-        if (!logged_backbuffer) {
-            D3D11_TEXTURE2D_DESC desc = {};
-            pBuffer->GetDesc(&desc);
-            LOGSTRF("D3DHooks_VRManager: Backbuffer %ux%u fmt=%u bind=0x%08x samples=%u quality=%u\n",
-                    desc.Width, desc.Height, static_cast<unsigned>(desc.Format), desc.BindFlags,
-                    desc.SampleDesc.Count, desc.SampleDesc.Quality);
-
-            if (hmdRenderer) {
-                ID3D11Texture2D* eyeTex = hmdRenderer->GetEyeTexture(VR::Eye::Left);
-                if (eyeTex) {
-                    D3D11_TEXTURE2D_DESC eyeDesc = {};
-                    eyeTex->GetDesc(&eyeDesc);
-                    LOGSTRF("D3DHooks_VRManager: Eye texture %ux%u fmt=%u bind=0x%08x samples=%u quality=%u\n",
-                            eyeDesc.Width, eyeDesc.Height,
-                            static_cast<unsigned>(eyeDesc.Format), eyeDesc.BindFlags,
-                            eyeDesc.SampleDesc.Count, eyeDesc.SampleDesc.Quality);
-                }
-            }
-            logged_backbuffer = true;
-        }
-
-        ID3D11DeviceContext* context;
-        backend->GetDevice()->GetImmediateContext(&context);
-        UpdateVignetteParams(context);
-
-        bool depthReady = false;
-        if (wantReprojection) {
-            ID3D11DepthStencilView* dsv = nullptr;
-            ID3D11RenderTargetView* current_rtv = nullptr;
-            context->OMGetRenderTargets(1, &current_rtv, &dsv);
-            if (dsv) {
-                depthReady = EnsureDepthResources(backend->GetDevice(), dsv);
-            }
-            if (!depthReady) {
-                static bool logged_depth_missing = false;
-                if (!logged_depth_missing) {
-                    LOGSTR("D3DHooks_VRManager: Depth reprojection requested but depth unavailable, falling back to blit\n");
-                    logged_depth_missing = true;
-                }
-            }
-            if (dsv) dsv->Release();
-            if (current_rtv) current_rtv->Release();
-        }
-
-        if (blit_pixel_shader_) {
-            if (wantAlternate) {
-                float eyeSign = (current_eye == VR::Eye::Left) ? -1.0f : 1.0f;
-                RenderBlit(backend->GetDevice(), context, pBuffer, hmdRenderer->GetEyeRenderTarget(current_eye), eyeSign);
-            } else {
-                RenderBlit(backend->GetDevice(), context, pBuffer,
-                           hmdRenderer->GetEyeRenderTarget(VR::Eye::Left), 0.0f, monoFallbackCopyBothEyes);
-            }
-        } else {
-            if (wantAlternate) {
-                hmdRenderer->Render(current_eye, pBuffer);
-            } else {
-                hmdRenderer->Render(VR::Eye::Left, pBuffer);
-            }
-        }
-
-        if (!wantAlternate && !monoFallbackCopyBothEyes) {
-            ID3D11Texture2D* rightEyeTexture = hmdRenderer->GetEyeTexture(VR::Eye::Right);
-            ID3D11RenderTargetView* rtv = hmdRenderer->GetEyeRenderTarget(VR::Eye::Right);
-            context->OMSetRenderTargets(1, &rtv, nullptr);
-
-            bool using_cached_srv = false;
-            ID3D11ShaderResourceView* color_srv = GetColorSRV(backend->GetDevice(), context, pBuffer, using_cached_srv);
-
-            if (wantReprojection && depthReady && reprojection_pixel_shader_) {
-                ApplyBlitStates(context);
-                context->VSSetShader(stereo_vertex_shader_, nullptr, 0);
-                context->PSSetShader(reprojection_pixel_shader_, nullptr, 0);
-
-                float imageScale = 1.0f;
-                float offsetX = 0.0f;
-                float offsetY = 0.0f;
-                GetImageTransform(1.0f, imageScale, offsetX, offsetY);
-
-                ReprojectionParams params = {};
-                params.u_ipd_offset = reproSettings.ipd.load();
-                params.u_depth_scale = reproSettings.depthScale.load();
-                params.u_depth_bias = reproSettings.depthBias.load();
-                params.u_image_scale = imageScale;
-                params.u_offset_x = offsetX;
-                params.u_offset_y = offsetY;
-                params.u_invert_depth = reproSettings.invertDepth.load() ? 1.0f : 0.0f;
-
-                context->UpdateSubresource(reprojection_constant_buffer_, 0, nullptr, &params, 0, 0);
-                context->PSSetConstantBuffers(0, 1, &reprojection_constant_buffer_);
-                context->PSSetConstantBuffers(1, 1, &vignette_constant_buffer_);
-
-                ID3D11ShaderResourceView* srvs[] = { color_srv, depth_srv_ };
-                context->PSSetShaderResources(0, 2, srvs);
-                context->PSSetSamplers(0, 1, &sampler_state_);
-
-                context->IASetInputLayout(nullptr);
-                context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                context->Draw(3, 0);
-
-                ID3D11ShaderResourceView* null_srvs[] = { nullptr, nullptr };
-                context->PSSetShaderResources(0, 2, null_srvs);
-            } else {
-                if (blit_pixel_shader_) {
-                    RenderBlit(backend->GetDevice(), context, pBuffer, rtv, 0.0f, false);
-                } else {
-                    context->CopyResource(rightEyeTexture, pBuffer);
-                }
-            }
-
-            if (color_srv && !using_cached_srv) {
-                color_srv->Release();
-            }
-        }
-
-        if (using_openvr) {
-            const auto& leftState = backend->GetControllerState(VR::Hand::Left);
-            const auto& rightState = backend->GetControllerState(VR::Hand::Right);
-            UpdateOverlayInputOpenVR(leftState, rightState);
-            RenderOverlayOpenVR();
-            if (overlay_ui && overlay_ui->ConsumeRecenterRequest()) {
-                backend->Recenter();
-                VR::GetViewSettings().snapYawOffsetDeg.store(0.0f);
-                VR::GetStereoSettings().recenterRequested.store(true);
-                VR::GetHeadLookSettings().recenterRequested.store(true);
-            }
-        }
-
-        // Submit to VR
-        // If virtual screen is active (cutscene), render the game frame on the virtual screen
-        if (showVirtualScreen && virtualScreen && virtualScreen->IsInitialized()) {
-            // Render game frame to virtual screen
-            virtualScreen->Render(pBuffer);
-
-            // Submit virtual screen textures
-            backend->SubmitEyeTexture(VR::Eye::Left, virtualScreen->GetEyeTexture(VR::Eye::Left));
-            backend->SubmitEyeTexture(VR::Eye::Right, virtualScreen->GetEyeTexture(VR::Eye::Right));
-        } else if (monoFallbackCopyBothEyes) {
-            ID3D11Texture2D* monoTexture = hmdRenderer->GetEyeTexture(VR::Eye::Left);
-            backend->SubmitEyeTexture(VR::Eye::Left, monoTexture);
-            backend->SubmitEyeTexture(VR::Eye::Right, monoTexture);
-        } else {
-            // Normal rendering
-            backend->SubmitEyeTexture(VR::Eye::Left, hmdRenderer->GetEyeTexture(VR::Eye::Left));
-            backend->SubmitEyeTexture(VR::Eye::Right, hmdRenderer->GetEyeTexture(VR::Eye::Right));
-        }
-
-        if (cameraHook) {
-            // Pass game state for decoupling and cutscene handling
-            Game::GtaGameState* gs = gameState.get();
-
-            if (wantAlternate && cameraHook->IsReady()) {
-                cameraHook->Update(next_eye, gs);
-                std::swap(current_eye, next_eye);
-            } else {
-                cameraHook->Update(VR::Eye::Left, gs);
-                current_eye = VR::Eye::Left;
-                next_eye = VR::Eye::Right;
-            }
-
-            // Handle recenter request
-            auto& stereoSettings = VR::GetStereoSettings();
-            if (stereoSettings.recenterRequested.exchange(false)) {
-                cameraHook->RecenterPose();
-            }
-        }
-
-        context->Release();
-        pBuffer->Release();
-
-		backend->EndFrame();
-
-        // Desktop mirroring. SyncInterval is preserved by default; the
-        // desktopMirrorSyncOverride settings key (or GTAVR_DESKTOP_MIRROR_SYNC0)
-        // restores the legacy forced-0 behavior.
-        static bool logged_mirror_sync = false;
-        if (!logged_mirror_sync && force_mirror_sync0_ && SyncInterval != 0) {
-            LOGSTR("D3DHooks_VRManager: desktopMirrorSyncOverride active - forcing desktop mirror sync interval to 0\n");
-            logged_mirror_sync = true;
-        }
-        HRESULT result = Original_PresentHook(pSwapChain,
-                                              force_mirror_sync0_ ? 0 : SyncInterval,
-                                              Flags);
+        HRESULT result = Stereo::StereoEngine::Get().OnPresent(pSwapChain, SyncInterval, Flags, services);
 
         // Device-lost/removed: log once, release everything, allow one clean
         // re-init on the next frame; the frame itself passes through.
@@ -1992,11 +1908,12 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
      * from inside a hooked frame.
      */
     void ShutdownVR() {
+        // Phase 8: flush + export gtavr_perf.csv before teardown. Idempotent;
+        // also reachable on demand via the F11 hotkey.
+        Perf::PerfStats::Get().Shutdown();
         ReleaseVRResources();
         overlay_visible = false;
         using_openvr = false;
-        current_eye = VR::Eye::Left;
-        next_eye = VR::Eye::Right;
     }
 
     /**

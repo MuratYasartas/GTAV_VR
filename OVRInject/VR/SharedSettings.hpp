@@ -68,7 +68,11 @@ inline void ComputeSafeRenderSize(uint32_t baseWidth,
 
 enum class StereoMode {
     Reprojection = 0,
-    AlternateEye = 1
+    AlternateEye = 1,
+    // EXPERIMENTAL stub: config-gated, not functional - StereoEngine logs once
+    // and falls back to AlternateEye. Do not select expecting a real dual-pass
+    // render.
+    DualPass = 2
 };
 
 struct ReprojectionSettings {
@@ -196,6 +200,11 @@ struct GameStateInfo {
 
 struct RuntimeStats {
     std::atomic<float> fps{0.0f};
+    // PerfStats mirrors (written on the render thread once per completed
+    // second; read by the overlay / any other thread).
+    std::atomic<float> frametimeP50Ms{0.0f};
+    std::atomic<float> frametimeP99Ms{0.0f};
+    std::atomic<float> frametimeP999Ms{0.0f};
     std::atomic<bool> cameraHookReady{false};
     std::atomic<bool> cameraConfigLoaded{false};
     std::atomic<uint64_t> cameraMatrixAddress{0};
