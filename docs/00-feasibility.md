@@ -45,8 +45,9 @@ design flaws.
     `XRSession.cpp:197-201` vs `XRHMDSupport.cpp:308-312`) → OpenXR controllers dead.
   - Frame-loop wedge if `xrBeginFrame` fails (`XRHMDSupport.cpp:364-366`,
     `XRFrameManager.cpp:34-37`).
-  - `XrFovToProjectionMatrix` builds an OpenGL-style projection (z∈[-1,1]); D3D needs [0,1]
-    (`XRCore.hpp:157-159`). Classic bug class; mission Phase 4 unit tests must catch this.
+  - ~~`XrFovToProjectionMatrix` builds an OpenGL-style projection~~ FIXED (wave 1):
+    replaced by `XrFovToProjectionMatrixD3D` (`XMMatrixPerspectiveOffCenterRH`,
+    z∈[0,1]); unit-tested by the projection oracle in `tests/TestProjection.cpp`.
 - **Present hook chain** (`OVRInject/D3DHook/D3DHooks_VRManager.hpp`) — MinHook on
   `D3D11CreateDeviceAndSwapChain`, then on the swapchain's `Present` target. Coherent,
   carries months of fixes. KEEP-WITH-FIXES (robustness gaps below).
