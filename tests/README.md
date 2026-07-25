@@ -43,6 +43,57 @@ env -u GTAV_INSTALL_DIR "/c/Program Files/Microsoft Visual Studio/18/Community/M
 Exit code is 0 when all tests pass (skips do not fail the run), 1 otherwise.
 Build artifacts go to `tests/x64/<Config>/`.
 
+## Injection-lifecycle harness (`injection_lifecycle.py`)
+
+Phase 9 harness for test-matrix row A4: inject -> hook/inert -> terminate,
+looped N times against the D3D11Cube slice. Pure Python 3 standard library.
+
+```
+python tests/injection_lifecycle.py [--count N] [--mode MODE] [--keep-logs]
+```
+
+Per iteration it starts `D3D11Cube.exe` with `GTAVR_LOG_DIR=<fresh temp dir>`,
+runs `GTAVOVR.exe` with `GTAVR_TARGET_PROCESS=D3D11Cube.exe` (OVRInject.dll is
+staged into a temp `GTAV_INSTALL_DIR` together with `openvr_api.dll` /
+`openxr_loader.dll`), watches the mod log stream for a terminal marker, then
+kills the cube and confirms it dies within 10 s. Results (per-run status +
+summary) go to `tests/lifecycle_report.txt`; exit code is non-zero unless
+every run is hook-success or clean-inert with zero crashes/hangs/timeouts.
+
+Modes (`--mode`):
+
+| Mode | Flow | Typical outcome on the slice |
+|------|------|------------------------------|
+| `cube-first` (default) | harness starts cube, launcher injects into the running process | `inert-clean` (late injection) |
+| `launcher-first` | launcher starts the cube from a staged dir, then injects | `inert-clean` (race) |
+| `shim` | dxgi-proxy load path (cube copy renamed `GTA5.exe`; the shim's MessageBox is auto-dismissed) | `inert-clean` (race) |
+| `mixed` | cycles the three | mixed |
+
+Terminal markers (from `OVRInject/D3DHook/D3DHooks_VRManager.hpp`): `Hooked
+Present at vtable index` (+ `Failed to initialize VR` / `VR initialized with`)
+= hook-success; `No D3D11 swapchain hooked within 30 s` = clean inert
+(late-injection watchdog); a CrashDump line or `gtavr_crash_*.dmp` = crash.
+
+Why inert-clean dominates on the slice: the cube creates its D3D11 device
+well under a second after process start, while any async mod load
+(CreateRemoteThread `LoadLibrary` of OVRInject + imports, or the shim's
+deferred load) finishes later - the creation hooks therefore land after the
+swapchain exists and the 30 s watchdog parks the mod inert, exactly as
+designed. Against a real game (minutes of startup before D3D init) the same
+flow ends hooked with inert-VR pass-through when no headset is active.
+
+Notes:
+- Live log capture uses `OutputDebugString` via the Win32 DBWIN protocol
+  (the mod mirrors every log line there; `gtavrInjectLog.txt` itself is held
+  open read-denied by the game and cannot be tailed). Only one DBWIN consumer
+  can exist per Windows session - do not run DebugView or a second harness
+  instance concurrently.
+- The launcher refuses to inject without a VR runtime (OpenXR ActiveRuntime
+  or SteamVR); on a machine with none, every run fails as `inject-failure`.
+- Leftover `D3D11Cube.exe` processes are killed by image name between runs;
+  shim mode instead cleans up strictly by PID because the cube runs renamed
+  as `GTA5.exe`.
+
 ## Conventions for adding tests
 
 - Put suites in `tests/Test<Something>.cpp`, add the file to the

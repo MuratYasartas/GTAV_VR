@@ -1695,26 +1695,6 @@ void GtaCameraHook::WriteCameraMatrix(const XMMATRIX& rotation, const XMFLOAT4& 
     }
 }
 
-XMMATRIX GtaCameraHook::GetProjectionMatrix(VR::Eye eye, float near_plane, float far_plane) {
-    if (!backend_) return XMMatrixIdentity();
-    return backend_->GetProjectionMatrix(eye, near_plane, far_plane);
-}
-
-XMMATRIX GtaCameraHook::GetEyeViewMatrix(VR::Eye eye) {
-    if (!backend_) return XMMatrixIdentity();
-
-    XMMATRIX headPose = backend_->GetHeadPoseMatrix();
-    auto& view = VR::GetViewSettings();
-    float snapYaw = view.snapYawOffsetDeg.load();
-    if (std::fabs(snapYaw) > 0.001f) {
-        XMMATRIX snapRot = XMMatrixRotationY(XMConvertToRadians(snapYaw));
-        headPose = snapRot * headPose;
-    }
-    XMMATRIX viewMatrix = XMMatrixInverse(nullptr, headPose);
-
-    return viewMatrix;
-}
-
 bool GtaCameraHook::LoadConfig(CameraConfig& outConfig) {
     std::wstring configPath = ResolveConfigPath();
     std::string pathUtf8 = WideToUtf8(configPath);

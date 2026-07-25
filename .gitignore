@@ -298,3 +298,4 @@ cudart64_12.dll
 openvr_api.dll
 samples/*/golden_run_a/
 samples/*/golden_run_*/
+RealConfig.bat

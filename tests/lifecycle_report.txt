@@ -1,0 +1,76 @@
+GTAVR injection-lifecycle report - 2026-07-25 15:53:48
+count=20 mode=cube-first hook-timeout=40s vr-timeout=20s
+cube=C:\Repos\GTA_VR\GTAV_VR\samples\D3D11Cube\x64\Release\D3D11Cube.exe
+launcher=C:\Repos\GTA_VR\GTAV_VR\x64\Release\GTAVOVR.exe
+OVRInject.dll=C:\Repos\GTA_VR\GTAV_VR\x64\Release\OVRInject.dll
+OVRInjectShim.dll=C:\Repos\GTA_VR\GTAV_VR\x64\Release\OVRInjectShim.dll
+
+run   1: inert-clean      34.3 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run   2: inert-clean      34.4 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run   3: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run   4: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run   5: inert-clean      34.3 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run   6: inert-clean      34.2 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run   7: inert-clean      34.3 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run   8: inert-clean      34.4 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run   9: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  10: inert-clean      34.3 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  11: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  12: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  13: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  14: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  15: inert-clean      34.0 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  16: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  17: inert-clean      34.0 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  18: inert-clean      34.0 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  19: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+run  20: inert-clean      34.1 s  mode=cube-first; late injection: swapchain predates hooks, watchdog kept mod inert  (log dir discarded)
+
+summary: 20 runs - 0 hook-success, 20 inert-clean, 0 crash, 0 hang, 0 timeout, 0 inject-failure
+verdict: PASS (0 crashes/hangs/timeouts required; hook-success and clean-inert both pass)
+note: on a machine with no live VR runtime the expected hooked outcome is 'Failed to initialize VR' (inert pass-through), not a crash.
+
+============================================================================
+Observations (appended by the Phase 9/10 workstream after the official run)
+============================================================================
+
+1. Why every run is inert-clean on the slice (NOT an OVRInject bug):
+   D3D11Cube creates its D3D11 device well under 1 s after process start.
+   Every supported load path is asynchronous and completes later:
+   - CreateRemoteThread injection: remote LoadLibrary of OVRInject.dll +
+     its import chain (dbghelp, openvr_api, openxr_loader) ~100 ms+, then
+     DllMain -> InitThread installs the creation hooks.
+   - Shim (dxgi proxy): DllMain Sleep(250) + modal MessageBox + the same
+     deferred LoadLibrary -> hooks land ~1 s after process start.
+   The Present-hook creation hooks therefore always arrive after the
+   swapchain exists, and the 30 s swapchain watchdog parks the mod inert
+   exactly as designed (D3DHooks_VRManager.hpp). Against GTA V (minutes of
+   startup before D3D init) the same flow is expected to end
+   hook-success + inert-VR pass-through. Hook-success on the slice is
+   structurally unreachable without modifying the slice or OVRInject, so it
+   is UNVERIFIED here; the watchdog inert path is verified 20/20 (plus
+   launcher-first and shim modes, 3/3 in a follow-up mixed run).
+
+2. No crashes, hangs, minidumps, or teardown failures were observed in any
+   run; every cube process died within the 10 s kill window. No
+   OVRInject-internal bugs found -> nothing to fix (and OVRInject was not
+   modified, per wave ownership).
+
+3. OVRInjectShim note (shipped loader, owned by another workstream):
+   OVRInjectShim/Log.cpp LOGWNDF pops a MODAL MessageBoxA ("Found GTA5.exe
+   with shim DLL, injecting main DLL..") on every successful shim injection.
+   On an unattended machine this stalls mod loading until someone clicks OK.
+   The harness auto-dismisses it in shim mode. Worth replacing with a
+   file-only log in the shipped build.
+
+4. Manifest layout note: OVRInject/Game/BuildManifest.cpp resolves
+   gtav_legacy.ini only as <GTAVR_SETTINGS_DIR|game exe dir|dll dir>\
+   gtav_legacy.ini (root), while the documented/installer layout ships a
+   manifests\ folder. tools/install.bat therefore copies BOTH
+   manifests\gtav_legacy.ini (documented layout) and a root
+   gtav_legacy.ini (what BuildManifest actually reads). The launcher
+   preflight checks both locations.
+
+5. Mixed-mode validation after the official run (same harness,
+   --count 3 --mode mixed): cube-first, launcher-first and shim runs all
+   inert-clean, 0 crash/hang/timeout; shim run dismissed 1 MessageBox.

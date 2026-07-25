@@ -28,17 +28,27 @@
 2. Copy the release files next to `GTA5.exe`:
    - `dxgi.dll` (the OVRInjectShim proxy — this is the mod loader),
    - `OVRInject.dll`, `openvr_api.dll` / `openxr_loader.dll` as shipped,
-   - `manifests/`, `gtavr_settings.ini`, `gtavr_camera.ini`.
+   - `manifests/`, `gtav_legacy.ini`, `gtavr_settings.ini`, `gtavr_camera.ini`.
    No game files are modified.
+   (`tools\install.bat <game dir>` does exactly this — backs up any existing
+   `dxgi.dll` to `dxgi.dll.gtavr-backup`, verifies every copy, and
+   `tools\uninstall.bat <game dir>` removes exactly those files and restores
+   the backup. Both are idempotent.)
 3. Configure your OpenXR runtime (the installer/preflight reads the
    `ActiveRuntime` registry key and tells you if none is set).
-4. Start the game normally. First launch: the mod initializes on the first
+4. Optional: run `GTAVOVR.exe --check` (preflight only — build detection, VR
+   runtime, BattlEye posture; nothing is launched or injected). Exit codes:
+   **0** ok-to-try, **2** unsupported build (no manifest section — the mod
+   would stay inert), **3** runtime missing, **4** injection failure.
+5. Start the game normally. First launch: the mod initializes on the first
    rendered frame; watch `gtavrInjectLog.txt` (override with
    `GTAVR_LOG_DIR`) for `VR initialized` or a human-readable refusal reason.
 
 ## 3. Uninstall
 
-Delete exactly the files you copied in step 2. The game is then fully
+Delete exactly the files you copied in step 2 — or run
+`tools\uninstall.bat <game dir>`, which removes exactly those files and
+restores `dxgi.dll.gtavr-backup` if one exists. The game is then fully
 vanilla again — the proxy DLL is the only loader, and nothing else persists.
 
 ## 4. Preflight failures (human-readable, on purpose)

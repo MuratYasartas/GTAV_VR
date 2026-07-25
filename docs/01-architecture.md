@@ -211,14 +211,14 @@ public:
 
 | Event | Required behavior | Status |
 |---|---|---|
-| DLL unload / process detach | Ordered: stop camera writes → disable hooks → XR session end → MinHook uninit; never `MH_Uninitialize` mid-hook | wave 2 |
-| ResizeBuffers / resolution change | Release eye targets + depth hints; recreate lazily next frame | wave 2 |
-| Device removed/lost | Log, pass through, attempt re-init once; never dereference stale device | wave 2 |
-| Alt-tab / fullscreen flip | XR session visibility loss handled by runtime events; submission pauses cleanly | wave 2 |
-| Online session detected | Immediate pass-through + camera-write stop + log reason; sticky until process restart | wave 1 module, wave 2 wiring |
-| Unsupported game build | Manifest miss → clear diagnostic, mod inert (no heuristic retries forever) | wave 1 |
-| xrBeginFrame failure | Recoverable frame state, no wedge | wave 1 |
-| Crash inside our code | Vectored handler → minidump + log bundle; never `exit()` the host | wave 2 |
+| DLL unload / process detach | Ordered: stop camera writes → disable hooks → XR session end → MinHook uninit; never `MH_Uninitialize` mid-hook | done (wave 2) |
+| ResizeBuffers / resolution change | Release eye targets + depth hints; recreate lazily next frame | done (wave 2) |
+| Device removed/lost | Log, pass through, attempt re-init once; never dereference stale device | done (wave 2) |
+| Alt-tab / fullscreen flip | XR session visibility loss handled by runtime events; submission pauses cleanly | done (wave 2) |
+| Online session detected | Immediate pass-through + camera-write stop + log reason; sticky until process restart | done (wave 1 module, wave 2 wiring) |
+| Unsupported game build | Manifest miss → clear diagnostic, mod inert (no heuristic retries forever) | done (wave 1) |
+| xrBeginFrame failure | Recoverable frame state, no wedge | done (wave 1) |
+| Crash inside our code | Vectored handler → minidump + log bundle; never `exit()` the host | done (wave 2) |
 
 ## 11. Out of scope (v1)
 

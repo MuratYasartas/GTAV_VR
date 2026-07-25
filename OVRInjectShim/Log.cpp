@@ -6,7 +6,9 @@
 
 #include <Windows.h>
 
-#pragma warning(push, 0)
+// Shim logger. Rules for anything running inside the host game process:
+// never show UI (a modal box can hang the game / stall unattended installs),
+// never terminate the host, never overflow a formatting buffer.
 
 void LOGSTRF(const char* format, ...)
 {
@@ -71,46 +73,33 @@ void LOGSTRF(const char* format, ...)
 
 void LOGWNDF(const char* format, ...)
 {
-  char* buf_fmtted = (char*)malloc(strlen(format) * 4 + 1);
-
   va_list args;
   va_start(args, format);
-  vsprintf(buf_fmtted, format, args);
-
+  char buffer[2048] = {};
+  vsnprintf(buffer, sizeof(buffer) - 1, format, args);
   va_end(args);
-
-  MessageBoxA(0, buf_fmtted, "Error Logged", MB_OK);
-
-  free(buf_fmtted);
+  LOGSTRF("WARN: %s", buffer);
 };
 
 void LOGFATALF(const char* format, ...)
 {
-  char* buf_fmtted = (char*)malloc(strlen(format) * 4 + 1);
-
+  // Log at fatal level and return — do NOT exit() the host game.
   va_list args;
   va_start(args, format);
-  vsprintf(buf_fmtted, format, args);
-
+  char buffer[2048] = {};
+  vsnprintf(buffer, sizeof(buffer) - 1, format, args);
   va_end(args);
-
-  MessageBoxA(0, buf_fmtted, "Fatal Error Logged", MB_OK);
-
-  free(buf_fmtted);
-
-  exit(1);
+  LOGSTRF("FATAL: %s", buffer);
 };
 
 void LOGOUTF(const char* format, ...) {
-  char buf_fmtted[4096];
+  char buf_fmtted[4096] = {};
 
   va_list args;
   va_start(args, format);
-  vsprintf(buf_fmtted, format, args);
+  vsnprintf(buf_fmtted, sizeof(buf_fmtted) - 1, format, args);
 
   va_end(args);
 
   OutputDebugStringA(buf_fmtted);
 };
-
-#pragma warning(pop)

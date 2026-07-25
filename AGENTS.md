@@ -20,13 +20,19 @@ This repo builds a single-player-only VR injection mod for RAGE-engine games
 - `GTAVOVR.sln` hosts the Visual Studio solution (projects: GTAVOVR, OVRInject,
   OVRInjectShim; slice + tests projects are being added).
 - `GTAVOVR/` is the dev launcher (env setup + CreateRemoteThread injection;
-  target process via argv[1] or `GTAVR_TARGET_PROCESS`).
+  target process via argv[1] or `GTAVR_TARGET_PROCESS`). `--check` runs
+  preflight only (build detection vs `manifests/`, VR runtime, BattlEye
+  posture); exit codes 0 ok-to-try, 2 unsupported build, 3 runtime missing,
+  4 injection failure.
 - `OVRInject/` holds the core VR injection logic, D3D hooks, OpenXR/OpenVR
   backends, overlay UI, and shaders. Subdirs: `D3DHook/`, `VR/` (backend
   abstraction), `OpenXR/`, `Game/` (title plugin: camera/FOV/state, OnlineGuard,
   BuildManifest), `Overlay/`, `Vive/` (being pruned to HMDRenderer).
 - `OVRInjectShim/` is the shipped loader: a proxy `dxgi.dll` that loads
   `OVRInject.dll` (ADR-0005).
+- `tools/` holds `install.bat` / `uninstall.bat`: idempotent game-dir
+  installer (backs up a foreign `dxgi.dll`, verifies copies) and exact
+  reverser (restores the backup). Smoke-test against throwaway dirs only.
 - `samples/D3D11Cube/` is the Phase 2 vertical-slice target + golden-image
   harness (`check_golden.py`).
 - `tests/` holds the unit-test runner and lifecycle/soak harnesses.

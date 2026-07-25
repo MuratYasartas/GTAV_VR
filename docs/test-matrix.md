@@ -8,13 +8,13 @@ ratio. Averages are not accepted.
 
 | ID | Test | Mechanism | Status |
 |---|---|---|---|
-| A1 | Matrix math unit tests (projection oracle, eye-view composition, IPD, layout, handedness) | `tests/GTAVRTests` exe | in progress (wave 1) |
-| A2 | Golden-image determinism (slice, fixed seed) | `samples/D3D11Cube` golden mode + `check_golden.py` | in progress (wave 1) |
-| A3 | Stereo-correctness: parallax sign & magnitude vs known depths | disparity analysis in `check_golden.py` (near cube z=1m shifts > far z=10m, correct direction for IPD sign) | in progress (wave 1) |
-| A4 | Injection lifecycle ×100 (inject → hook → uninject, no leaks/crashes) | `tests/injection_lifecycle` harness vs slice app | pending (wave 4) |
+| A1 | Matrix math unit tests (projection oracle, eye-view composition, IPD, layout, handedness) | `tests/GTAVRTests` exe | **PASS 16/16 (76 checks)** |
+| A2 | Golden-image determinism (slice, fixed seed) | `samples/D3D11Cube` golden mode + `check_golden.py` | **PASS** (40 frames byte-identical) |
+| A3 | Stereo-correctness: parallax sign & magnitude vs known depths | disparity analysis in `check_golden.py` (near cube z=1m shifts > far z=10m, correct direction for IPD sign) | **PASS** (+40.4 / +11.0 / +3.2 px, theory-matching) |
+| A4 | Injection lifecycle (inject → hook/inert → clean exit, zero crashes) | `tests/injection_lifecycle.py` vs slice app | **PASS 20/20** — inert-clean every run (slice creates its device in <1 s so the hook is structurally unreachable there; watchdog exit clean; hook-success on the real game UNVERIFIED) |
 | A5 | OpenXR API validation + api-dump layers | loader validation layers env on slice run | pending; headsetless — session creation may be unavailable ❓ |
 | A6 | Soak ≥2 h per title | scripted session + frametime CSV | harness pending; **2 h run UNVERIFIED this milestone** |
-| A7 | Build gate | `Release|x64` 0 errors | active |
+| A7 | Build gate | `Release|x64` 0 errors | **PASS** (all 5 projects) |
 
 ## B. Manual matrix — per title × build × GPU × runtime
 

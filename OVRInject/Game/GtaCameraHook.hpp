@@ -39,10 +39,6 @@ public:
     // Returns true if we successfully found the camera
     bool IsReady() const;
 
-    // Get projection/view matrices for rendering
-    DirectX::XMMATRIX GetProjectionMatrix(VR::Eye eye, float near_plane, float far_plane);
-    DirectX::XMMATRIX GetEyeViewMatrix(VR::Eye eye);
-
     // Reset the reference pose (recenter)
     void RecenterPose();
 
