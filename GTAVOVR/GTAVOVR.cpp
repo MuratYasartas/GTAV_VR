@@ -101,6 +101,15 @@ static int StageRuntimeFiles(const std::wstring& moduleDir, const std::wstring& 
 		printf("[stage] gtav_legacy.ini synced -> %ls\n", dllDir.c_str());
 		staged++;
 	}
+
+	// Camera config (pattern overrides, negate flags, resolve timeouts).
+	std::wstring cameraDst = dllDir + L"\\gtavr_camera.ini";
+	std::wstring cameraSrc = moduleDir + L"\\gtavr_camera.ini";
+	if (!FileExists(cameraSrc)) cameraSrc = repoRoot + L"\\gtavr_camera.ini";
+	if (SyncFile(cameraSrc, cameraDst)) {
+		printf("[stage] gtavr_camera.ini synced -> %ls\n", dllDir.c_str());
+		staged++;
+	}
 	return staged;
 }
 

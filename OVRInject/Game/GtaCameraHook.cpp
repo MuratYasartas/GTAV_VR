@@ -444,12 +444,19 @@ bool GtaCameraHook::RunResolutionPass(bool allowFullSweep, uint64_t deadlineTick
     }
 
     // 2) Active camera via the camera director (GtaCameraFov).
+    // FULL PASSES ONLY. This step's pointer/metadata scans (up to millions of
+    // VirtualQuery calls in the worst case) have no time budget and wedged a
+    // background retry for 10+ minutes live (2026-07-26), starving the cheap
+    // manifest retry that would have succeeded. Cheap passes must stay cheap:
+    // config + manifest + direct-scan only.
     addr = 0;
     base = 0;
-    if (!ShouldAbortScan(deadlineTick) && TryResolveFromActiveCamera(addr, base)) {
+    if (allowFullSweep && !ShouldAbortScan(deadlineTick) && TryResolveFromActiveCamera(addr, base)) {
         if (ValidateAndPublishCandidate(addr, base, "active-camera")) {
             return true;
         }
+    } else if (!allowFullSweep) {
+        LOGDBGF("GtaCameraHook: cheap pass - skipping active-camera step\n");
     }
 
     // 3) Build-manifest patterns (version-pinned, manifests/gtav_legacy.ini).
