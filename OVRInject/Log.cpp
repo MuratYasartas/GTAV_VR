@@ -125,8 +125,10 @@ FILE* OpenLogFile() {
 	char logPath[MAX_PATH] = {};
 	GetLogPath(logPath, sizeof(logPath), kLogFileName);
 
-	FILE* fp = nullptr;
-	if (fopen_s(&fp, logPath, "a") == 0 && fp) {
+	// _fsopen with _SH_DENYNO: support tooling (and the user, mid-session)
+	// must be able to read the log while we hold it open.
+	FILE* fp = _fsopen(logPath, "a", _SH_DENYNO);
+	if (fp) {
 		return fp;
 	}
 
@@ -135,7 +137,8 @@ FILE* OpenLogFile() {
 	DWORD tempLen = GetTempPathA(static_cast<DWORD>(sizeof(tempPath)), tempPath);
 	if (tempLen > 0 && tempLen < sizeof(tempPath)) {
 		strncat_s(tempPath, sizeof(tempPath), kLogFileName, _TRUNCATE);
-		if (fopen_s(&fp, tempPath, "a") == 0 && fp) {
+		fp = _fsopen(tempPath, "a", _SH_DENYNO);
+		if (fp) {
 			return fp;
 		}
 	}

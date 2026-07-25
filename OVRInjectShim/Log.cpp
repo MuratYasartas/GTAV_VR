@@ -66,13 +66,15 @@ FILE* GetLogFile() {
 	static FILE* logFile = [] {
 		char logPath[MAX_PATH] = {};
 		GetLogPath(logPath, sizeof(logPath));
-		FILE* fp = nullptr;
-		if (fopen_s(&fp, logPath, "a") == 0 && fp) return fp;
+		// _fsopen/_SH_DENYNO: the log must stay readable while held open.
+		FILE* fp = _fsopen(logPath, "a", _SH_DENYNO);
+		if (fp) return fp;
 		char tempPath[MAX_PATH] = {};
 		DWORD tempLen = GetTempPathA(static_cast<DWORD>(sizeof(tempPath)), tempPath);
 		if (tempLen > 0 && tempLen < sizeof(tempPath)) {
 			strncat_s(tempPath, sizeof(tempPath), kLogFileName, _TRUNCATE);
-			if (fopen_s(&fp, tempPath, "a") == 0 && fp) return fp;
+			fp = _fsopen(tempPath, "a", _SH_DENYNO);
+			if (fp) return fp;
 		}
 		return (FILE*)nullptr;
 	}();
