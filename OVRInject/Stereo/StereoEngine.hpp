@@ -22,8 +22,17 @@
  *                                      backend->GetProjectionMatrix(eye, near,
  *                                      far) with manifest-driven clip planes
  *                                      when available, else 0.1 / 1500.
- *   6) Submit + EndFrame             - then the desktop mirror via the
- *                                      original Present.
+ *   6) Submit + EndFrame             - in AER BOTH eye layers are submitted
+ *                                      every frame (fresh eye's new blit +
+ *                                      stale eye's own persistent texture,
+ *                                      see Stereo/EyeDelivery.hpp); then
+ *                                      the desktop mirror via the original
+ *                                      Present.
+ *   7) Camera write                  - AFTER the original Present returns
+ *                                      (write-timing contract documented at
+ *                                      the write site in StereoEngine.cpp):
+ *                                      the NEXT eye's pose, so the next game
+ *                                      render uses it.
  *
  * HMDRenderer remains the blit/copy mechanism; the D3D mechanics stay in the
  * D3DHook layer and are invoked through the FrameServices op pointers. This
@@ -32,6 +41,7 @@
 
 #include "../VR/IVRBackend.hpp"
 #include "../VR/SharedSettings.hpp"
+#include "EyeDelivery.hpp"
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -116,7 +126,7 @@ public:
 
     // Introspection (logging / future overlay use).
     int GetEffectiveMode() const { return effectiveMode_; }
-    uint64_t GetFrameIndex() const { return frameIndex_; }
+    uint64_t GetFrameIndex() const { return eyeDelivery_.FrameIndex(); }
     float GetRuntimeIpd() const { return runtimeIpd_; }
     float GetNearPlane() const { return nearPlane_; }
     float GetFarPlane() const { return farPlane_; }
@@ -145,13 +155,13 @@ private:
     };
     DirectX::XMMATRIX headPoseLatched_ = DirectX::XMMatrixIdentity();
 
-    uint64_t frameIndex_ = 0;                // AER parity source (eye = index & 1)
+    EyeDelivery eyeDelivery_;                  // AER parity + delivery planner
     int effectiveMode_ = static_cast<int>(VR::StereoMode::AlternateEye);
     int lastLoggedMode_ = -1;
 
     bool loggedDualPass_ = false;
     bool loggedCameraFallback_ = false;
-    bool loggedAerSingleSubmit_ = false;
+    bool loggedAerDelivery_ = false;
     bool loggedMirrorSync_ = false;
     bool loggedBackbuffer_ = false;
     bool loggedLateLatch_ = false;

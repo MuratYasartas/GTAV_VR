@@ -117,7 +117,15 @@ void OpenVRBackend::SubmitEyeTexture(Eye eye, ID3D11Texture2D* texture) {
     if (!IsInitialized() || !texture) return;
 
 	vr::Texture_t vr_texture = { (void*)texture, vr::TextureType_DirectX, vr::ColorSpace_Gamma };
-	vr::VRCompositor()->Submit((vr::EVREye)eye, &vr_texture);
+	vr::EVRCompositorError err = vr::VRCompositor()->Submit((vr::EVREye)eye, &vr_texture);
+	if (err != vr::VRCompositorError_None) {
+		// Rate-limited: a rejected submission otherwise fails as a silent black HMD.
+		static int submitErrorCount = 0;
+		if (++submitErrorCount <= 10 || (submitErrorCount % 600) == 0) {
+			LOGWNDF("OpenVRBackend: Submit(eye=%d) rejected with error %d (count=%d)\n",
+			        static_cast<int>(eye), static_cast<int>(err), submitErrorCount);
+		}
+	}
 }
 
 void OpenVRBackend::UpdateAsyncReprojectionSetting() {

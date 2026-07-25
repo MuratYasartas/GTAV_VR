@@ -12,6 +12,7 @@ most "VR looks wrong" bugs are matrix bugs).
 | `TestMain.cpp` | `main()` -> `RunAllTests()`. |
 | `TestProjection.cpp` | Projection oracle tests for `OVRInject::XR::XrFovToProjectionMatrixD3D` (D3D clip z in [0,1], OpenXR RH view space, forward -Z, +Y up). |
 | `TestEyeView.cpp` | Eye-view composition (`V = inverse(P_eye * P_head)`), IPD, handedness, and row-major `float[16]` shared-memory layout tests. Self-contained (only `<DirectXMath.h>`); must always pass standalone. |
+| `TestEyeDelivery.cpp` | AER eye-delivery state machine (`../OVRInject/Stereo/EyeDelivery.hpp`, header-only, dependency-free): per-frame layer→texture mapping on F/F+1/F+2, the no-cross-eye invariant (layer i always backed by eye texture i; single warmup exception after reset), missed-frame parity stability, and camera-write eye = next render eye. |
 | `Stubs.cpp` | Link stubs for symbols `XRCore.cpp` drags in: mod logging (`LOGSTRF` & friends, no-ops) and the two OpenXR loader entry points (`xrResultToString`, `xrEnumerateInstanceExtensionProperties`). The math under test never calls them. |
 | `run_tests.bat` | Build + run (see below). |
 

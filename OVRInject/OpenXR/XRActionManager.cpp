@@ -64,7 +64,13 @@ bool XRActionManager::AttachToSession() {
     attachInfo.actionSets = &action_set_;
 
     XrResult result = xrAttachSessionActionSets(session, &attachInfo);
-    if (XR_FAILED(result)) {
+    if (result == XR_ERROR_ACTIONSETS_ALREADY_ATTACHED) {
+        // A previous AttachToSession call attached the sets but failed during
+        // action-space creation (or the session re-entered READY after
+        // STOPPING). Action sets stay attached for the session lifetime;
+        // continue to (re)create the action spaces instead of failing forever.
+        LOGSTR("XRActionManager: Action sets already attached; continuing with action spaces\n");
+    } else if (XR_FAILED(result)) {
         LOGSTRF("XRActionManager: Failed to attach action sets (result: %d)\n", result);
         return false;
     }
@@ -426,8 +432,10 @@ bool XRActionManager::CreateActionSpaces() {
 
     XrSession session = session_->GetHandle();
 
-    // Create grip spaces for both hands
+    // Create grip spaces for both hands (skip any already created by a
+    // previous partial attach, so a retry never leaks or duplicates)
     for (size_t i = 0; i < 2; ++i) {
+        if (grip_spaces_[i] != XR_NULL_HANDLE) continue;
         XrActionSpaceCreateInfo spaceInfo = {XR_TYPE_ACTION_SPACE_CREATE_INFO};
         spaceInfo.action = grip_pose_action_;
         spaceInfo.subactionPath = hand_paths_[i];
@@ -442,6 +450,7 @@ bool XRActionManager::CreateActionSpaces() {
 
     // Create aim spaces for both hands
     for (size_t i = 0; i < 2; ++i) {
+        if (aim_spaces_[i] != XR_NULL_HANDLE) continue;
         XrActionSpaceCreateInfo spaceInfo = {XR_TYPE_ACTION_SPACE_CREATE_INFO};
         spaceInfo.action = aim_pose_action_;
         spaceInfo.subactionPath = hand_paths_[i];

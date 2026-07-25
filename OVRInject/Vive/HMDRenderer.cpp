@@ -65,11 +65,11 @@ DXGI_FORMAT HMDRenderer::NormalizeFormat(DXGI_FORMAT format)
 {
 	switch (format) {
 	case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-		return DXGI_FORMAT_R8G8B8A8_TYPELESS;
+		return DXGI_FORMAT_R8G8B8A8_UNORM;
 	case DXGI_FORMAT_B8G8R8A8_TYPELESS:
-		return DXGI_FORMAT_B8G8R8A8_TYPELESS;
+		return DXGI_FORMAT_B8G8R8A8_UNORM;
 	case DXGI_FORMAT_R16G16B16A16_TYPELESS:
-		return DXGI_FORMAT_R16G16B16A16_TYPELESS;
+		return DXGI_FORMAT_R16G16B16A16_FLOAT;
 	default:
 		return format;
 	}
@@ -191,6 +191,20 @@ void HMDRenderer::Initialize()
 		if (FAILED(hr) || !eye_rtvs_[i]) {
 			LOGSTRF("HMDRenderer: CreateRenderTargetView failed for eye %d (hr=0x%08X)\n",
 			        i, static_cast<unsigned>(hr));
+		}
+	}
+
+	// Start both eyes at opaque black. In AER the stale eye's texture is
+	// re-submitted before it was ever blitted (first AER frame after
+	// engagement, eye-texture recreation on resize), and freshly created
+	// textures carry undefined content that would flash garbage in-headset.
+	if (context_) {
+		const float kOpaqueBlack[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+		for (int i = 0; i < 2; i++)
+		{
+			if (eye_rtvs_[i]) {
+				context_->ClearRenderTargetView(eye_rtvs_[i], kOpaqueBlack);
+			}
 		}
 	}
 }

@@ -183,9 +183,19 @@ bool XRHMDSupport::Initialize(IDXGISwapChain* swap_chain, ID3D11Device* device) 
         return false;
     }
 
-    // Create swapchains with recommended resolution
-    uint32_t width = view_manager_->GetRecommendedWidth();
-    uint32_t height = view_manager_->GetRecommendedHeight();
+    // Create swapchains with recommended resolution, clamped the same way as
+    // the runtime recreate path (ComputeSafeRenderSize): the raw recommended
+    // size (e.g. 5424x5356 on a Crystal Super) exceeds the eye-texture clamp,
+    // which would force the box-copy path AND leave a stale strip of every
+    // swapchain image unwritten.
+    uint32_t baseWidth = view_manager_->GetRecommendedWidth();
+    uint32_t baseHeight = view_manager_->GetRecommendedHeight();
+    uint32_t width = 0, height = 0;
+    VR::ComputeSafeRenderSize(baseWidth, baseHeight, 1.0f, render_scale_, width, height);
+    if (width != baseWidth || height != baseHeight) {
+        LOGSTRF("XRHMDSupport: Initial swapchain size clamped %ux%u -> %ux%u (scale %.2f)\n",
+                baseWidth, baseHeight, width, height, render_scale_);
+    }
 
     swapchains_ = std::make_unique<XR::XRStereoSwapchains>(session_.get(), graphics_.get());
     bool created = false;
@@ -249,6 +259,8 @@ bool XRHMDSupport::Initialize(IDXGISwapChain* swap_chain, ID3D11Device* device) 
                 overlayVisible = false;
             }
             overlay_ui_->SetVisible(overlayVisible);
+            LOGSTRF("XRHMDSupport: Overlay initially %s - toggle with Delete/Insert/F10 or controller menu button\n",
+                    overlayVisible ? "visible" : "hidden");
             overlay_ui_->SetOnSettingsChanged([this](const XR::VRSettings& settings) {
                 ApplyOverlaySettings(settings);
             });
@@ -363,6 +375,12 @@ bool XRHMDSupport::BeginFrame() {
 
     // Poll events
     session_->PollEvents();
+
+    // Keyboard overlay toggle: polled unconditionally, even when the
+    // session is not renderable (parity with the OpenVR path's
+    // Delete/Insert), so the menu can always be opened with dead or
+    // unmapped controllers.
+    PollOverlayKeyboardToggle();
     // Visibility gate: xrWaitFrame blocks indefinitely while the session is
     // not visible/focused (e.g. the runtime's home holds the display, or the
     // runtime never composites this session). Never freeze the game for that:
@@ -693,6 +711,36 @@ void XRHMDSupport::SetOverlayVisible(bool visible) {
     }
 }
 
+void XRHMDSupport::PollOverlayKeyboardToggle() {
+    if (!overlay_ui_ || !overlay_ui_->IsInitialized()) {
+        return;
+    }
+
+    // Delete/Insert match the OpenVR path (D3DHooks_VRManager.hpp);
+    // F10 is kept for existing OpenXR users.
+    static bool prevDelDown = false;
+    static bool prevInsDown = false;
+    static bool prevF10Down = false;
+    bool delDown = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
+    bool insDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+    bool f10Down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+    bool pressed = (delDown && !prevDelDown) ||
+                   (insDown && !prevInsDown) ||
+                   (f10Down && !prevF10Down);
+    prevDelDown = delDown;
+    prevInsDown = insDown;
+    prevF10Down = f10Down;
+
+    if (pressed) {
+        overlay_ui_->Toggle();
+        if (overlay_manager_) {
+            overlay_manager_->SetAllVisible(overlay_ui_->IsVisible());
+        }
+        LOGSTRF("XRHMDSupport: Overlay toggled via keyboard -> %s\n",
+                overlay_ui_->IsVisible() ? "visible" : "hidden");
+    }
+}
+
 void XRHMDSupport::UpdateOverlayUI(const XR::ControllerState& leftState,
                                    const XR::ControllerState& rightState) {
     if (!overlay_ui_ || !overlay_ui_->IsInitialized()) {
@@ -739,17 +787,9 @@ void XRHMDSupport::UpdateOverlayUI(const XR::ControllerState& leftState,
     rightInput.secondaryPressed = rightSrc.secondaryPressed;
 
     bool toggleRequested = leftSrc.menuJustPressed || rightSrc.menuJustPressed;
-    static bool prevF10Down = false;
-    static bool prevInsDown = false;
-    bool f10Down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-    bool insDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-    bool f10Pressed = f10Down && !prevF10Down;
-    bool insPressed = insDown && !prevInsDown;
-    prevF10Down = f10Down;
-    prevInsDown = insDown;
-    if (f10Pressed || insPressed) {
-        toggleRequested = true;
-    }
+    // NOTE: the keyboard toggle (Delete/Insert/F10) lives in
+    // PollOverlayKeyboardToggle(), called from BeginFrame regardless of
+    // session visibility - polling it here too would double-toggle.
     if (!toggleRequested) {
         bool bothGrips = leftSrc.gripJustPressed && rightSrc.gripJustPressed;
         bool bothPrimary = leftSrc.primaryJustPressed && rightSrc.primaryJustPressed;

@@ -76,7 +76,7 @@ struct VRSettings {
     bool asyncReprojection = true;
     float renderScale = 1.0f;
     float gameResolutionScale = 1.0f;
-    bool desktopMirrorSyncOverride = false;
+    bool desktopMirrorSyncOverride = true;
 
     // Depth reprojection (fake stereo)
     bool reprojectionEnabled = true;
@@ -163,7 +163,9 @@ public:
     void Render();
 
     /**
-     * Handle controller input for UI navigation
+     * Handle input for UI navigation. Controllers (thumbstick cursor +
+     * trigger click) are primary; the desktop mouse and keyboard arrows
+     * are automatic fallbacks when controllers are dead or unmapped.
      * @param leftState Left controller state
      * @param rightState Right controller state
      */

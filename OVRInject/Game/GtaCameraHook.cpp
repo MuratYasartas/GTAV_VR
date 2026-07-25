@@ -228,8 +228,82 @@ GtaCameraHook::GtaCameraHook(VR::IVRBackend* backend, GtaCameraFov* cameraFov)
 }
 
 GtaCameraHook::~GtaCameraHook() {
+    // Stop the worker BEFORE anything it might use (camera_fov_, config_)
+    // goes away. Join is bounded: all scan loops poll worker_stop_.
+    StopWorker();
     LOGSTRF("GtaCameraHook: Destroyed. Updates: %u, Writes: %u\n",
             update_count_, write_success_count_);
+}
+
+void GtaCameraHook::StartWorker() {
+    bool expected = false;
+    if (!worker_started_.compare_exchange_strong(expected, true)) {
+        return;  // already running
+    }
+
+    worker_wake_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // auto-reset
+    if (!worker_wake_event_) {
+        LOGWNDF("GtaCameraHook: wake event creation failed (gle=%lu) - worker will poll\n",
+                GetLastError());
+    }
+
+    worker_stop_.store(false, std::memory_order_release);
+
+    // Snapshot the Fov scanner + its lifetime token BEFORE spawning the
+    // thread: the instance is known-alive here (Hook runs during VRManager
+    // init), while it may be freed just before ~GtaCameraHook during
+    // shutdown. The worker only ever touches this snapshot under the token
+    // lock, never a re-read pointer.
+    worker_fov_ = camera_fov_.load(std::memory_order_acquire);
+    worker_fov_token_ = worker_fov_ ? worker_fov_->GetLifetimeToken() : nullptr;
+
+    try {
+        worker_thread_ = std::thread(&GtaCameraHook::WorkerMain, this);
+    } catch (...) {
+        LOGWNDF("GtaCameraHook: failed to start worker thread - camera resolution disabled\n");
+        worker_started_.store(false, std::memory_order_release);
+        if (worker_wake_event_) {
+            CloseHandle(worker_wake_event_);
+            worker_wake_event_ = nullptr;
+        }
+        return;
+    }
+    LOGDBGF("GtaCameraHook: worker thread spawned (resolveTimeout=%ds, backgroundRetry=%ds)\n",
+            config_.resolveTimeoutSec, config_.backgroundRetrySec);
+}
+
+void GtaCameraHook::StopWorker() {
+    if (!worker_started_.load(std::memory_order_acquire)) {
+        return;
+    }
+    worker_stop_.store(true, std::memory_order_release);
+    if (worker_wake_event_) {
+        SetEvent(worker_wake_event_);
+    }
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();
+    }
+    if (worker_wake_event_) {
+        CloseHandle(worker_wake_event_);
+        worker_wake_event_ = nullptr;
+    }
+    worker_started_.store(false, std::memory_order_release);
+    LOGDBGF("GtaCameraHook: worker stopped\n");
+}
+
+DWORD GtaCameraHook::WaitForWorkerEvent(uint32_t timeoutMs) const {
+    if (!worker_wake_event_) {
+        Sleep(timeoutMs);
+        return WAIT_TIMEOUT;
+    }
+    return WaitForSingleObject(worker_wake_event_, timeoutMs);
+}
+
+bool GtaCameraHook::ShouldAbortScan(uint64_t deadlineTick) const {
+    if (worker_stop_.load(std::memory_order_acquire)) {
+        return true;
+    }
+    return deadlineTick != 0 && GetTickCount64() >= deadlineTick;
 }
 
 bool GtaCameraHook::Hook() {
@@ -245,104 +319,355 @@ bool GtaCameraHook::Hook() {
     stats.cameraMatrixAddress.store(0);
     stats.cameraMatrixWritable.store(false);
 
-    // Load config
+    // Load config (cheap file read - the only thing still done synchronously).
     config_loaded_ = LoadConfig(config_);
     stats.cameraConfigLoaded.store(config_loaded_);
 
-    // Try config first, then built-in fallback patterns
-    uintptr_t matrixAddress = 0;
-    uintptr_t cameraBase = 0;
-    bool candidateFound = false;
-
-    if (config_loaded_) {
-        if (ResolveMatrixAddress(config_, matrixAddress)) {
-            candidateFound = true;
-            if (AcceptMatrixCandidate(matrixAddress, 0)) {
-                LOGSTRF("GtaCameraHook: SUCCESS! Camera matrix at 0x%p\n", matrix_address_);
-                return true;
-            }
-        } else {
-            LOGSTR("GtaCameraHook: Config pattern failed (may be null during loading)\n");
-        }
-    }
-
-    // Try active camera scan if GtaCameraFov works
-    if (TryResolveFromActiveCamera(matrixAddress, cameraBase)) {
-        candidateFound = true;
-        if (AcceptMatrixCandidate(matrixAddress, cameraBase)) {
-            LOGSTRF("GtaCameraHook: SUCCESS! Camera matrix at 0x%p\n", matrix_address_);
-            return true;
-        }
-    } else if (!candidateFound) {
-        LOGSTR("GtaCameraHook: Active camera scan not available yet\n");
-    }
-
-    if (TryResolveFromMetadataObjects(matrixAddress, cameraBase)) {
-        candidateFound = true;
-        if (AcceptMatrixCandidate(matrixAddress, cameraBase)) {
-            LOGSTRF("GtaCameraHook: SUCCESS! Camera matrix at 0x%p\n", matrix_address_);
-            return true;
-        }
-    } else if (!candidateFound) {
-        LOGSTR("GtaCameraHook: Metadata object scan did not locate an active camera\n");
-    }
-
-    // Try build-manifest patterns (for different GTA V versions)
-    if (!candidateFound) {
-        LOGSTR("GtaCameraHook: Trying build manifest patterns...\n");
-
-        // Patterns/offsets come exclusively from the version-pinned manifest
-        // (manifests/gtav_legacy.ini via BuildManifest) - no AOB pattern is
-        // hardcoded in source. Unknown build -> no patterns -> clean failure.
-        BuildManifest& manifest = BuildManifest::Get();
-        manifest.Initialize();
-        std::vector<CameraPatternEntry> entries;
-        if (manifest.IsBuildSupported() && manifest.GetCameraPatterns(entries)) {
-            for (size_t i = 0; i < entries.size(); ++i) {
-                const CameraPatternEntry& entry = entries[i];
-                CameraConfig fallbackConfig;
-                fallbackConfig.pattern = entry.pattern;
-                fallbackConfig.patternOffset = entry.patternOffset;
-                fallbackConfig.relativeOffsets = entry.relativeOffsets;
-                fallbackConfig.ripOffset = entry.ripOffset;
-                fallbackConfig.ripOffsetSet = entry.ripOffsetSet;
-                fallbackConfig.matrixOffset = entry.matrixOffset;
-                fallbackConfig.pointerOffsets = entry.pointerOffsets;
-
-                uintptr_t candidate = 0;
-                LOGDBGF("GtaCameraHook: trying manifest pattern %zu/%zu (source: %s)\n",
-                        i + 1, entries.size(), entry.source.c_str());
-                if (TryDirectMatrixScan(fallbackConfig, candidate)) {
-                    candidateFound = true;
-                    LOGSTRF("GtaCameraHook: Manifest pattern %zu matched (source: %s)\n",
-                            i + 1, entry.source.c_str());
-                    if (AcceptMatrixCandidate(candidate, 0)) {
-                        LOGSTRF("GtaCameraHook: SUCCESS! Camera matrix at 0x%p\n", matrix_address_);
-                        return true;
-                    }
-                    LOGWNDF("GtaCameraHook: manifest pattern %zu matched but candidate REJECTED by validation\n", i + 1);
-                } else {
-                    LOGDBGF("GtaCameraHook: manifest pattern %zu: no match\n", i + 1);
-                }
-            }
-        } else {
-            LOGSTR("GtaCameraHook: No manifest patterns for this build "
-                   "(see BuildManifest diagnostics - unsupported build)\n");
-        }
-    }
-
-    if (!candidateFound) {
-        LOGSTR("GtaCameraHook: All resolution methods failed - will retry during updates\n");
-    } else {
-        LOGSTR("GtaCameraHook: Found camera candidates, waiting for validation\n");
-    }
+    // ALL expensive resolution (full-module pattern scans, whole-process
+    // metadata sweeps) runs on the background worker. Previous revisions did
+    // this on the render thread: a single metadata sweep takes ~7.7s on a
+    // live GTA5.exe and was repeated while no candidate validated, freezing
+    // the game at ~0.13 fps. The render thread now only consumes validated
+    // candidates via the lock-free handoff in Update().
+    StartWorker();
+    LOGSTR("GtaCameraHook: camera resolution running on background worker\n");
 
     stats.cameraHookReady.store(false);
-    return false;
+    return false;  // not ready synchronously; worker publishes candidates
 }
 
 bool GtaCameraHook::IsReady() const {
-    return hook_ready_ && matrix_address_ != nullptr;
+    return hook_ready_.load(std::memory_order_acquire) &&
+           matrix_address_.load(std::memory_order_acquire) != 0;
+}
+
+void GtaCameraHook::WorkerMain() {
+    LOGDBGF("GtaCameraHook: worker started (tid=%lu)\n", GetCurrentThreadId());
+
+    int timeoutSec = config_.resolveTimeoutSec;
+    if (timeoutSec < 5) timeoutSec = 5;
+    if (timeoutSec > 600) timeoutSec = 600;
+    int retrySec = config_.backgroundRetrySec;
+    if (retrySec < 0) retrySec = 0;
+    if (retrySec > 3600) retrySec = 3600;
+    const uint64_t budgetMs = static_cast<uint64_t>(timeoutSec) * 1000ull;
+    const uint64_t retryMs = static_cast<uint64_t>(retrySec) * 1000ull;
+
+    uint64_t windowStartTick = GetTickCount64();
+    bool gaveUp = false;
+    bool gaveUpLogged = false;
+    bool wasReady = false;
+    uint32_t passIndex = 0;
+
+    while (!worker_stop_.load(std::memory_order_acquire)) {
+        // Never resolve (or keep resolving) while the online guard is hot.
+        if (OnlineGuard::Get().ShouldDisableMod()) {
+            WaitForWorkerEvent(1000);
+            continue;
+        }
+
+        bool ready = IsReady();
+        if (wasReady && !ready) {
+            // Camera lost mid-game (scene transition, write failure): grant a
+            // fresh resolution window with the full method set.
+            LOGDBGF("GtaCameraHook: camera lost - restarting resolution window\n");
+            gaveUp = false;
+            windowStartTick = GetTickCount64();
+            retry_requested_.store(false, std::memory_order_release);
+        }
+        wasReady = ready;
+
+        if (ready) {
+            // Cheap periodic re-resolve so camera switches (on foot <->
+            // vehicle etc.) are tracked. Bounded scans, worker thread.
+            RunReadyRefresh();
+            WaitForWorkerEvent(2000);
+            continue;
+        }
+
+        if (!gaveUp) {
+            retry_requested_.store(false, std::memory_order_release);
+            uint64_t deadline = windowStartTick + budgetMs;
+            RunResolutionPass(true, deadline, ++passIndex);
+            if (!IsReady() && !handoff_pending_.load(std::memory_order_acquire) &&
+                !worker_stop_.load(std::memory_order_acquire)) {
+                if (GetTickCount64() >= deadline) {
+                    gaveUp = true;
+                    if (!gaveUpLogged) {
+                        gaveUpLogged = true;
+                        LOGSTR("GtaCameraHook: camera unresolved - staying in mono mode\n");
+                    }
+                    LOGDBGF("GtaCameraHook: give-up after %u passes (%llums budget exhausted); "
+                            "retry via manual recenter or %llus background retry\n",
+                            passIndex, budgetMs, retryMs / 1000ull);
+                } else {
+                    WaitForWorkerEvent(250);
+                }
+            }
+            continue;
+        }
+
+        // Given up: stop sweeping. Retry only via manual recenter (full pass)
+        // or the periodic background retry (cheap pass - no whole-process
+        // metadata sweep).
+        DWORD waitRes = WaitForWorkerEvent(retryMs ? static_cast<uint32_t>(retryMs) : INFINITE);
+        if (worker_stop_.load(std::memory_order_acquire)) {
+            break;
+        }
+        bool manual = retry_requested_.exchange(false, std::memory_order_acq_rel);
+        if (manual) {
+            LOGDBGF("GtaCameraHook: manual recenter retry - full resolution pass %u\n",
+                    passIndex + 1);
+            RunResolutionPass(true, GetTickCount64() + budgetMs, ++passIndex);
+        } else if (waitRes == WAIT_TIMEOUT && retryMs) {
+            LOGDBGF("GtaCameraHook: background retry - cheap resolution pass %u\n", passIndex + 1);
+            RunResolutionPass(false, GetTickCount64() + budgetMs, ++passIndex);
+        }
+    }
+
+    LOGDBGF("GtaCameraHook: worker exiting\n");
+}
+
+bool GtaCameraHook::RunResolutionPass(bool allowFullSweep, uint64_t deadlineTick, uint32_t passIndex) {
+    LOGDBGF("GtaCameraHook: resolution pass %u start (fullSweep=%d)\n",
+            passIndex, allowFullSweep ? 1 : 0);
+    ULONGLONG passStart = GetTickCount64();
+
+    uintptr_t addr = 0;
+    uintptr_t base = 0;
+
+    // 1) Config-based resolution (gtavr_camera.ini [camera]).
+    if (config_loaded_ && !ShouldAbortScan(deadlineTick) && ResolveMatrixAddress(config_, addr)) {
+        if (ValidateAndPublishCandidate(addr, 0, "config")) {
+            return true;
+        }
+    }
+
+    // 2) Active camera via the camera director (GtaCameraFov).
+    addr = 0;
+    base = 0;
+    if (!ShouldAbortScan(deadlineTick) && TryResolveFromActiveCamera(addr, base)) {
+        if (ValidateAndPublishCandidate(addr, base, "active-camera")) {
+            return true;
+        }
+    }
+
+    // 3) Build-manifest patterns (version-pinned, manifests/gtav_legacy.ini).
+    BuildManifest& manifest = BuildManifest::Get();
+    manifest.Initialize();
+    std::vector<CameraPatternEntry> entries;
+    if (manifest.IsBuildSupported() && manifest.GetCameraPatterns(entries)) {
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (ShouldAbortScan(deadlineTick)) {
+                LOGDBGF("GtaCameraHook: pass %u aborted at manifest pattern %zu/%zu\n",
+                        passIndex, i + 1, entries.size());
+                return false;
+            }
+            const CameraPatternEntry& entry = entries[i];
+            CameraConfig fallbackConfig;
+            fallbackConfig.pattern = entry.pattern;
+            fallbackConfig.patternOffset = entry.patternOffset;
+            fallbackConfig.relativeOffsets = entry.relativeOffsets;
+            fallbackConfig.ripOffset = entry.ripOffset;
+            fallbackConfig.ripOffsetSet = entry.ripOffsetSet;
+            fallbackConfig.matrixOffset = entry.matrixOffset;
+            fallbackConfig.pointerOffsets = entry.pointerOffsets;
+
+            uintptr_t candidate = 0;
+            LOGDBGF("GtaCameraHook: trying manifest pattern %zu/%zu (source: %s)\n",
+                    i + 1, entries.size(), entry.source.c_str());
+            if (TryDirectMatrixScan(fallbackConfig, candidate)) {
+                LOGDBGF("GtaCameraHook: manifest pattern %zu matched (source: %s)\n",
+                        i + 1, entry.source.c_str());
+                if (ValidateAndPublishCandidate(candidate, 0, "manifest")) {
+                    return true;
+                }
+                LOGDBGF("GtaCameraHook: manifest pattern %zu candidate REJECTED by validation\n", i + 1);
+            } else {
+                LOGDBGF("GtaCameraHook: manifest pattern %zu: no match\n", i + 1);
+            }
+        }
+    } else if (passIndex == 1) {
+        LOGDBGF("GtaCameraHook: no manifest patterns for this build (unsupported build)\n");
+    }
+
+    // 4) Whole-process metadata sweep - expensive (~7.7s+ per sweep on a live
+    //    GTA5.exe); full passes only, throttled by metadataSweepIntervalSec.
+    addr = 0;
+    base = 0;
+    if (allowFullSweep && TryResolveFromMetadataObjects(addr, base, deadlineTick)) {
+        if (ValidateAndPublishCandidate(addr, base, "metadata-sweep")) {
+            return true;
+        }
+    }
+
+    // 5) Direct matrix scan with the config pattern (last resort).
+    addr = 0;
+    if (allowFullSweep && config_loaded_ && !ShouldAbortScan(deadlineTick) &&
+        TryDirectMatrixScan(config_, addr)) {
+        if (ValidateAndPublishCandidate(addr, 0, "direct-scan")) {
+            return true;
+        }
+    }
+
+    LOGDBGF("GtaCameraHook: resolution pass %u end: no candidate (%llums)\n",
+            passIndex, GetTickCount64() - passStart);
+    return false;
+}
+
+void GtaCameraHook::RunReadyRefresh() {
+    uintptr_t addr = 0;
+    uintptr_t base = 0;
+    bool found = false;
+
+    // Preserve the historic preference: config resolution first, then the
+    // active-camera path when config fails.
+    if (config_loaded_ && ResolveMatrixAddress(config_, addr)) {
+        found = true;
+        base = 0;
+    }
+    if (!found && TryResolveFromActiveCamera(addr, base)) {
+        found = true;
+    }
+    if (!found || worker_stop_.load(std::memory_order_acquire)) {
+        return;  // transient failure (level transition) - keep current camera
+    }
+    if (addr == matrix_address_.load(std::memory_order_acquire)) {
+        return;  // same camera, nothing to do
+    }
+    ValidateAndPublishCandidate(addr, base, "refresh");
+}
+
+bool GtaCameraHook::ValidateAndPublishCandidate(uintptr_t candidate, uintptr_t cameraBase,
+                                                const char* source) {
+    if (!candidate || worker_stop_.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    // Pure-read validation (no writes to candidate memory, no calls into
+    // game code): metadata presence, writability, then two ScoreMatrix
+    // samples ~40ms apart for stability.
+    if (cameraBase) {
+        uintptr_t meta = 0;
+        if (!FindMetadataInCamera(cameraBase, meta)) {
+            LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: no camera metadata\n",
+                    reinterpret_cast<void*>(candidate), source);
+            return false;
+        }
+    }
+
+    if (!IsWritable(candidate, sizeof(GtaCameraMatrix))) {
+        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: not writable\n",
+                reinterpret_cast<void*>(candidate), source);
+        return false;
+    }
+
+    GtaCameraMatrix first = {};
+    if (!SafeRead(candidate, &first, sizeof(first))) {
+        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: read failed\n",
+                reinterpret_cast<void*>(candidate), source);
+        return false;
+    }
+    float score = 0.0f;
+    if (!ScoreMatrix(first, score)) {
+        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: implausible matrix\n",
+                reinterpret_cast<void*>(candidate), source);
+        return false;
+    }
+
+    // Stability sample #2 ~40ms later (interruptible on shutdown).
+    for (int i = 0; i < 8; ++i) {
+        if (worker_stop_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        Sleep(5);
+    }
+    GtaCameraMatrix second = {};
+    float score2 = 0.0f;
+    if (!SafeRead(candidate, &second, sizeof(second)) || !ScoreMatrix(second, score2)) {
+        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: failed stability re-read\n",
+                reinterpret_cast<void*>(candidate), source);
+        return false;
+    }
+
+    // Publish. Never overwrite an unconsumed candidate.
+    if (handoff_pending_.load(std::memory_order_acquire)) {
+        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) deferred: previous handoff unconsumed\n",
+                reinterpret_cast<void*>(candidate), source);
+        return false;
+    }
+
+    uint32_t hashKey = 0;
+    uint32_t hashName = 0;
+    if (cameraBase) {
+        TryReadCameraHashes(cameraBase, hashKey, hashName);
+    }
+
+    handoff_address_.store(candidate, std::memory_order_relaxed);
+    handoff_base_.store(cameraBase, std::memory_order_relaxed);
+    handoff_hash_key_.store(hashKey, std::memory_order_relaxed);
+    handoff_hash_name_.store(hashName, std::memory_order_relaxed);
+    handoff_pending_.store(true, std::memory_order_release);
+    LOGDBGF("GtaCameraHook: candidate 0x%p ACCEPTED (%s, score=%.3f) - published to render thread\n",
+            reinterpret_cast<void*>(candidate), source, score);
+    return true;
+}
+
+void GtaCameraHook::ConsumeWorkerCandidate() {
+    if (!handoff_pending_.load(std::memory_order_acquire)) {
+        return;  // O(1) common case: nothing published
+    }
+    uint64_t candidate = handoff_address_.load(std::memory_order_relaxed);
+    uint64_t cameraBase = handoff_base_.load(std::memory_order_relaxed);
+    uint64_t hashKey = handoff_hash_key_.load(std::memory_order_relaxed);
+    uint64_t hashName = handoff_hash_name_.load(std::memory_order_relaxed);
+    handoff_pending_.store(false, std::memory_order_release);
+
+    if (!candidate) {
+        return;
+    }
+    if (matrix_address_.load(std::memory_order_acquire) == candidate &&
+        hook_ready_.load(std::memory_order_acquire)) {
+        return;  // already adopted
+    }
+
+    // Cheap O(1) read-only re-validation on the render thread (the worker
+    // already fully validated; this only guards against the memory racing
+    // away between publish and adopt).
+    if (!IsWritable(candidate, sizeof(GtaCameraMatrix))) {
+        LOGDBGF("GtaCameraHook: handoff candidate 0x%p dropped: no longer writable\n",
+                reinterpret_cast<void*>(candidate));
+        return;
+    }
+    GtaCameraMatrix matrix = {};
+    if (!SafeRead(candidate, &matrix, sizeof(matrix))) {
+        LOGDBGF("GtaCameraHook: handoff candidate 0x%p dropped: read failed\n",
+                reinterpret_cast<void*>(candidate));
+        return;
+    }
+    float score = 0.0f;
+    if (!ScoreMatrix(matrix, score)) {
+        LOGDBGF("GtaCameraHook: handoff candidate 0x%p dropped: implausible\n",
+                reinterpret_cast<void*>(candidate));
+        return;
+    }
+
+    matrix_address_.store(candidate, std::memory_order_release);
+    hook_ready_.store(true, std::memory_order_release);
+    if (cameraBase) {
+        active_camera_base_.store(cameraBase, std::memory_order_release);
+    }
+
+    auto& stats = VR::GetRuntimeStats();
+    stats.cameraMatrixAddress.store(candidate);
+    stats.cameraMatrixWritable.store(true);
+    stats.cameraHookReady.store(true);
+    if (hashKey || hashName) {
+        stats.activeCameraHash.store(static_cast<uint32_t>(hashKey));
+        stats.activeCameraHashName.store(static_cast<uint32_t>(hashName));
+    }
+    LOGSTRF("GtaCameraHook: Camera matrix validated at 0x%p (score=%.3f)\n",
+            reinterpret_cast<void*>(candidate), score);
 }
 
 bool GtaCameraHook::ScoreMatrix(const GtaCameraMatrix& matrix, float& outScore) const {
@@ -605,77 +930,6 @@ bool GtaCameraHook::FindCameraByMetadataScan(uintptr_t base, uintptr_t& outCamer
     return false;
 }
 
-bool GtaCameraHook::AcceptMatrixCandidate(uintptr_t candidate, uintptr_t cameraBase) {
-    if (!candidate) {
-        pending_matrix_address_ = 0;
-        pending_camera_base_ = 0;
-        pending_valid_frames_ = 0;
-        return false;
-    }
-
-    if (matrix_address_ == reinterpret_cast<void*>(candidate) && hook_ready_) {
-        return true;
-    }
-
-    if (pending_matrix_address_ != candidate || pending_camera_base_ != cameraBase) {
-        pending_matrix_address_ = candidate;
-        pending_camera_base_ = cameraBase;
-        pending_valid_frames_ = 0;
-    }
-
-    if (cameraBase) {
-        uintptr_t meta = 0;
-        if (!FindMetadataInCamera(cameraBase, meta)) {
-            pending_valid_frames_ = 0;
-            return false;
-        }
-    }
-
-    if (!IsWritable(candidate, sizeof(GtaCameraMatrix))) {
-        pending_valid_frames_ = 0;
-        return false;
-    }
-
-    GtaCameraMatrix matrix = {};
-    if (!SafeRead(candidate, &matrix, sizeof(matrix))) {
-        pending_valid_frames_ = 0;
-        return false;
-    }
-    float score = 0.0f;
-    if (!ScoreMatrix(matrix, score)) {
-        pending_valid_frames_ = 0;
-        return false;
-    }
-
-    pending_valid_frames_++;
-    if (pending_valid_frames_ < 2) {
-        return false;
-    }
-
-    matrix_address_ = reinterpret_cast<void*>(candidate);
-    hook_ready_ = true;
-    pending_valid_frames_ = 0;
-    if (cameraBase) {
-        active_camera_base_ = cameraBase;
-    }
-
-    auto& stats = VR::GetRuntimeStats();
-    stats.cameraMatrixAddress.store(static_cast<uint64_t>(candidate));
-    stats.cameraMatrixWritable.store(true);
-    stats.cameraHookReady.store(true);
-    if (cameraBase) {
-        uint32_t hashKey = 0;
-        uint32_t hashName = 0;
-        if (TryReadCameraHashes(cameraBase, hashKey, hashName)) {
-            stats.activeCameraHash.store(hashKey);
-            stats.activeCameraHashName.store(hashName);
-        }
-    }
-    LOGSTRF("GtaCameraHook: Camera matrix validated at 0x%p (score=%.3f)\n",
-            matrix_address_, score);
-    return true;
-}
-
 bool GtaCameraHook::TryDirectMatrixScan(const CameraConfig& config, uintptr_t& outAddress) {
     // This function scans for a camera matrix directly without following pointer chains
     // It's used as a fallback when pointer-based resolution fails
@@ -685,7 +939,7 @@ bool GtaCameraHook::TryDirectMatrixScan(const CameraConfig& config, uintptr_t& o
         module = GetModuleHandle(nullptr);
     }
 
-    uintptr_t patternAddr = PatternScanner::FindPattern(config.pattern.c_str(), module);
+    uintptr_t patternAddr = PatternScanner::FindPattern(config.pattern.c_str(), module, &worker_stop_);
     if (!patternAddr) {
         return false;
     }
@@ -801,16 +1055,31 @@ bool GtaCameraHook::TryResolveFromActiveCamera(uintptr_t& outAddress, uintptr_t&
     outAddress = 0;
     outCameraBase = 0;
 
-    GtaCameraFov* fov = camera_fov_;
+    // WORKER THREAD ONLY. Access to the shared GtaCameraFov goes through the
+    // lifetime token cached at worker start (object known-alive then); it is
+    // locked around every use, so the worker can never race the VRManager
+    // shutdown order (cameraFov is destroyed before cameraHook).
+    GtaCameraFov* fov = worker_fov_;
     GtaCameraFov localFov;
+    std::unique_lock<std::mutex> gateLock;
 
     if (!fov) {
-        if (!localFov.Initialize()) {
+        // No shared scanner: resolve synchronously on this (background)
+        // thread with a local instance.
+        if (!localFov.ResolveBlocking()) {
             return false;
         }
         fov = &localFov;
-    } else if (!fov->IsReady()) {
-        if (!fov->Initialize()) {
+    } else {
+        if (!worker_fov_token_) {
+            return false;
+        }
+        gateLock = std::unique_lock<std::mutex>(worker_fov_token_->mutex);
+        if (!worker_fov_token_->alive.load(std::memory_order_acquire)) {
+            return false;  // GtaCameraFov is being destroyed
+        }
+        if (!fov->IsReady()) {
+            fov->Initialize();  // async kick-off, cheap
             return false;
         }
     }
@@ -846,9 +1115,9 @@ bool GtaCameraHook::TryResolveFromActiveCamera(uintptr_t& outAddress, uintptr_t&
         }
     }
 
-    if (cameraBase != active_camera_base_) {
+    if (cameraBase != active_camera_base_.load(std::memory_order_acquire)) {
         LOGSTRF("GtaCameraHook: Active camera base = 0x%p\n", reinterpret_cast<void*>(cameraBase));
-        active_camera_base_ = cameraBase;
+        active_camera_base_.store(cameraBase, std::memory_order_release);
     }
     outCameraBase = cameraBase;
 
@@ -881,7 +1150,7 @@ bool GtaCameraHook::TryResolveFromActiveCamera(uintptr_t& outAddress, uintptr_t&
             if (FindMatrixInCamera(metaCamera, found, 0x4000)) {
                 LOGSTRF("GtaCameraHook: Switched camera base to 0x%p\n",
                         reinterpret_cast<void*>(metaCamera));
-                active_camera_base_ = metaCamera;
+                active_camera_base_.store(metaCamera, std::memory_order_release);
                 outCameraBase = metaCamera;
                 outAddress = found;
                 return true;
@@ -891,10 +1160,10 @@ bool GtaCameraHook::TryResolveFromActiveCamera(uintptr_t& outAddress, uintptr_t&
 
     uintptr_t foundBase = 0;
     if (FindMatrixViaPointerScan(cameraBase, outAddress, foundBase)) {
-        if (foundBase != active_camera_base_) {
+        if (foundBase != active_camera_base_.load(std::memory_order_acquire)) {
             LOGSTRF("GtaCameraHook: Active camera base updated via pointer scan = 0x%p\n",
                     reinterpret_cast<void*>(foundBase));
-            active_camera_base_ = foundBase;
+            active_camera_base_.store(foundBase, std::memory_order_release);
         }
         outCameraBase = foundBase;
         return true;
@@ -904,12 +1173,16 @@ bool GtaCameraHook::TryResolveFromActiveCamera(uintptr_t& outAddress, uintptr_t&
 }
 
 bool GtaCameraHook::TryResolveFromMetadataObjects(uintptr_t& outAddress,
-                                                  uintptr_t& outCameraBase) const {
+                                                  uintptr_t& outCameraBase,
+                                                  uint64_t deadlineTick) const {
     outAddress = 0;
     outCameraBase = 0;
 
-    // Throttle: this function performs two whole-process VirtualQuery sweeps,
-    // which is far too expensive to run often. Run at most once per N seconds;
+    // WORKER THREAD ONLY. Both sweeps below walk the whole process address
+    // space (~7.7s+ each on a live GTA5.exe); they poll ShouldAbortScan so
+    // they stay interruptible (shutdown + resolution-budget deadline).
+    //
+    // Throttle: run at most once per N seconds;
     // N is a manifest value ([detect] metadataSweepIntervalSec, default 5).
     int sweepIntervalSec = 5;
     BuildManifest::Get().GetMetadataSweepIntervalSeconds(sweepIntervalSec);
@@ -919,6 +1192,7 @@ bool GtaCameraHook::TryResolveFromMetadataObjects(uintptr_t& outAddress,
     ULONGLONG nowTick = GetTickCount64();
     if (last_metadata_sweep_tick_ != 0 &&
         nowTick - last_metadata_sweep_tick_ < static_cast<ULONGLONG>(sweepIntervalSec) * 1000ull) {
+        LOGDBGF("GtaCameraHook: metadata sweep skipped (throttled, interval=%ds)\n", sweepIntervalSec);
         return false;
     }
     last_metadata_sweep_tick_ = nowTick;
@@ -962,7 +1236,15 @@ bool GtaCameraHook::TryResolveFromMetadataObjects(uintptr_t& outAddress,
     uintptr_t address = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
     uintptr_t maxAddress = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
 
+    LOGDBGF("GtaCameraHook: metadata sweep 1/2 start (candidate objects)\n");
+    ULONGLONG sweepStart = GetTickCount64();
+    bool aborted = false;
+
     while (address < maxAddress) {
+        if (ShouldAbortScan(deadlineTick)) {
+            aborted = true;
+            break;
+        }
         MEMORY_BASIC_INFORMATION mbi = {};
         if (!VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi))) {
             break;
@@ -984,6 +1266,11 @@ bool GtaCameraHook::TryResolveFromMetadataObjects(uintptr_t& outAddress,
         auto* bytes = reinterpret_cast<const uint8_t*>(regionBase);
         size_t limit = static_cast<size_t>(mbi.RegionSize - 0x10);
         for (size_t offset = 0; offset <= limit; offset += sizeof(uintptr_t)) {
+            // Cheap periodic abort check (bitmask, ~every 512KB scanned).
+            if ((offset & 0x7FFFF) == 0 && ShouldAbortScan(deadlineTick)) {
+                aborted = true;
+                break;
+            }
             uintptr_t vftable = 0;
             uint32_t hash = 0;
             // SEH-guarded: the region may be freed between VirtualQuery and now.
@@ -998,7 +1285,18 @@ bool GtaCameraHook::TryResolveFromMetadataObjects(uintptr_t& outAddress,
 
             metadataCandidates.push_back(regionBase + offset);
         }
+        if (aborted) {
+            break;
+        }
     }
+
+    if (aborted) {
+        LOGDBGF("GtaCameraHook: metadata sweep 1/2 ABORTED after %llums\n",
+                GetTickCount64() - sweepStart);
+        return false;
+    }
+    LOGDBGF("GtaCameraHook: metadata sweep 1/2 end: %zu candidates, %llums\n",
+            metadataCandidates.size(), GetTickCount64() - sweepStart);
 
     if (metadataCandidates.empty()) {
         return false;
@@ -1011,9 +1309,16 @@ bool GtaCameraHook::TryResolveFromMetadataObjects(uintptr_t& outAddress,
     LOGSTRF("GtaCameraHook: Metadata object scan found %zu camera metadata candidates\n",
             metadataCandidates.size());
 
+    LOGDBGF("GtaCameraHook: metadata sweep 2/2 start (back-references)\n");
+    sweepStart = GetTickCount64();
+
     constexpr size_t kCameraOffsets[] = { 0x540, 0x230, 0x10 };
     address = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
     while (address < maxAddress) {
+        if (ShouldAbortScan(deadlineTick)) {
+            aborted = true;
+            break;
+        }
         MEMORY_BASIC_INFORMATION mbi = {};
         if (!VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi))) {
             break;
@@ -1035,6 +1340,10 @@ bool GtaCameraHook::TryResolveFromMetadataObjects(uintptr_t& outAddress,
         auto* words = reinterpret_cast<const uintptr_t*>(regionBase);
         size_t wordCount = static_cast<size_t>(mbi.RegionSize / sizeof(uintptr_t));
         for (size_t i = 0; i < wordCount; ++i) {
+            if ((i & 0xFFFF) == 0 && ShouldAbortScan(deadlineTick)) {
+                aborted = true;
+                break;
+            }
             uintptr_t value = 0;
             // SEH-guarded: the region may be freed between VirtualQuery and now.
             if (!SehReadWord(words + i, value)) {
@@ -1064,13 +1373,20 @@ bool GtaCameraHook::TryResolveFromMetadataObjects(uintptr_t& outAddress,
                 LOGSTRF("GtaCameraHook: Resolved active camera via metadata object 0x%p -> camera 0x%p\n",
                         reinterpret_cast<void*>(value),
                         reinterpret_cast<void*>(cameraBase));
+                LOGDBGF("GtaCameraHook: metadata sweep 2/2 end: match, %llums\n",
+                        GetTickCount64() - sweepStart);
                 outAddress = matrixAddress;
                 outCameraBase = cameraBase;
                 return true;
             }
         }
+        if (aborted) {
+            break;
+        }
     }
 
+    LOGDBGF("GtaCameraHook: metadata sweep 2/2 end: no match, %llums%s\n",
+            GetTickCount64() - sweepStart, aborted ? " (ABORTED)" : "");
     return false;
 }
 
@@ -1120,90 +1436,13 @@ void GtaCameraHook::Update(VR::Eye eye, GtaGameState* gameState) {
         return;
     }
 
-    if (!IsReady() && pending_matrix_address_) {
-        if (AcceptMatrixCandidate(pending_matrix_address_, pending_camera_base_)) {
-            LOGSTRF("GtaCameraHook: Promoted pending camera matrix to 0x%p\n", matrix_address_);
-        }
-    }
-
-    bool inMenuOrLoading = gameState && (gameState->IsLoading() || gameState->IsInMenu());
-    bool inCutsceneVirtualScreen = false;
-    if (gameState && gameState->IsCutsceneActive()) {
-        auto& cutscene = VR::GetCutsceneSettings();
-        auto mode = static_cast<VR::CutsceneMode>(cutscene.mode.load());
-        inCutsceneVirtualScreen = (mode == VR::CutsceneMode::VirtualScreen);
-    }
-    bool suppressHeavyScanning = inMenuOrLoading || inCutsceneVirtualScreen;
-
-    // ALWAYS try to resolve camera address periodically, even during cutscenes
-    // This is important because the initial Hook() may fail due to timing
-    // But heavy scans while the game is in menus/loading cause visible hitches.
-    uint32_t scanInterval = 0;
-    if (IsReady()) {
-        scanInterval = 120;
-    } else if (suppressHeavyScanning) {
-        scanInterval = 900;
-    } else {
-        scanInterval = 180;
-    }
-
-    if (update_count_ - last_camera_scan_ > scanInterval) {
-        last_camera_scan_ = update_count_;
-        bool accepted = false;
-        uintptr_t refreshed = 0;
-        uintptr_t refreshedBase = 0;
-
-        // Try config-based resolution first
-        if (config_loaded_ && ResolveMatrixAddress(config_, refreshed)) {
-            if (AcceptMatrixCandidate(refreshed, 0)) {
-                LOGSTRF("GtaCameraHook: Updated camera matrix via config to 0x%p\n", matrix_address_);
-                accepted = true;
-            }
-        }
-
-        // Try active camera scan (requires GtaCameraFov)
-        refreshed = 0;
-        refreshedBase = 0;
-        if (!accepted && TryResolveFromActiveCamera(refreshed, refreshedBase)) {
-            if (AcceptMatrixCandidate(refreshed, refreshedBase)) {
-                LOGSTRF("GtaCameraHook: Updated camera matrix to 0x%p\n", matrix_address_);
-                accepted = true;
-            }
-        }
-
-        static uint32_t metadataScanAttempts = 0;
-        refreshed = 0;
-        refreshedBase = 0;
-        if (!accepted && !IsReady() && !suppressHeavyScanning && (metadataScanAttempts++ % 20 == 0)) {
-            if (TryResolveFromMetadataObjects(refreshed, refreshedBase)) {
-                if (AcceptMatrixCandidate(refreshed, refreshedBase)) {
-                    LOGSTRF("GtaCameraHook: Updated camera matrix via metadata scan to 0x%p\n",
-                            matrix_address_);
-                    accepted = true;
-                }
-            }
-        }
-
-        // Try direct matrix scan as last resort (every 5th scan attempt to avoid overhead)
-        static uint32_t directScanAttempts = 0;
-        refreshed = 0;
-        if (!accepted && !IsReady() && !suppressHeavyScanning && (directScanAttempts++ % 10 == 0)) {
-            // Try direct scan with config pattern
-            if (config_loaded_ && TryDirectMatrixScan(config_, refreshed)) {
-                if (AcceptMatrixCandidate(refreshed, 0)) {
-                    LOGSTRF("GtaCameraHook: Updated camera matrix via direct scan to 0x%p\n", matrix_address_);
-                    accepted = true;
-                }
-            }
-        }
-
-        if (suppressHeavyScanning && update_count_ % 900 == 1) {
-            LOGSTR("GtaCameraHook: Heavy camera scanning throttled while in menu/loading/cutscene screen\n");
-        }
-    }
+    // O(1) handoff: adopt a worker-validated camera candidate, if any.
+    // ALL scanning/resolution lives on the background worker (WorkerMain);
+    // the render thread never pattern-scans, sweeps process memory, or calls
+    // into game code from here.
+    ConsumeWorkerCandidate();
 
     // Skip camera WRITES during cutscenes, menus, loading
-    // But we still do the scan above to keep the hook alive
     bool skipCutscene = false;
     if (gameState && gameState->IsCutsceneActive()) {
         auto& cutscene = VR::GetCutsceneSettings();
@@ -1220,20 +1459,21 @@ void GtaCameraHook::Update(VR::Eye eye, GtaGameState* gameState) {
 
     if (!IsReady()) {
         if (update_count_ % 300 == 1) {
-            LOGSTRF("GtaCameraHook: Not ready (hook_ready=%d, addr=%p, pending=%p, stable=%u)\n",
-                    hook_ready_ ? 1 : 0, matrix_address_,
-                    reinterpret_cast<void*>(pending_matrix_address_), pending_valid_frames_);
+            LOGDBGF("GtaCameraHook: Not ready (addr=%p, handoffPending=%d) - worker resolving\n",
+                    reinterpret_cast<void*>(matrix_address_.load(std::memory_order_acquire)),
+                    handoff_pending_.load(std::memory_order_acquire) ? 1 : 0);
         }
         return;
     }
 
-    if (!IsWritable(reinterpret_cast<uintptr_t>(matrix_address_), sizeof(GtaCameraMatrix))) {
+    if (!IsWritable(matrix_address_.load(std::memory_order_acquire), sizeof(GtaCameraMatrix))) {
         static bool logged = false;
         if (!logged) {
-            LOGSTRF("GtaCameraHook: Matrix address 0x%p is not writable, disabling hook\n", matrix_address_);
+            LOGSTRF("GtaCameraHook: Matrix address 0x%p is not writable, disabling hook\n",
+                    reinterpret_cast<void*>(matrix_address_.load(std::memory_order_acquire)));
             logged = true;
         }
-        hook_ready_ = false;
+        hook_ready_.store(false, std::memory_order_release);
         auto& stats = VR::GetRuntimeStats();
         stats.cameraHookReady.store(false);
         return;
@@ -1324,6 +1564,14 @@ void GtaCameraHook::Update(VR::Eye eye, GtaGameState* gameState) {
 
 void GtaCameraHook::RecenterPose() {
     if (!backend_) return;
+
+    // Manual retry trigger: if the worker gave up on camera resolution
+    // ("camera unresolved - staying in mono mode"), a recenter runs one full
+    // resolution pass. Cheap on this thread (flag + event only).
+    retry_requested_.store(true, std::memory_order_release);
+    if (worker_wake_event_) {
+        SetEvent(worker_wake_event_);
+    }
 
     // Store current VR rotation as reference
     XMMATRIX headPose = backend_->GetHeadPoseMatrix();
@@ -1560,7 +1808,7 @@ XMFLOAT4 GtaCameraHook::ComputeCameraPosition(const GtaCameraMatrix& gameMatrix,
 }
 
 bool GtaCameraHook::ReadGameCamera(GtaCameraMatrix& outMatrix) const {
-    uintptr_t address = reinterpret_cast<uintptr_t>(matrix_address_);
+    uintptr_t address = matrix_address_.load(std::memory_order_acquire);
 
     if (!IsReadable(address, sizeof(GtaCameraMatrix))) {
         return false;
@@ -1656,7 +1904,7 @@ XMMATRIX GtaCameraHook::ComposeRotations(const XMMATRIX& base, const XMMATRIX& d
 }
 
 void GtaCameraHook::WriteCameraMatrix(const XMMATRIX& rotation, const XMFLOAT4& position) {
-    uintptr_t address = reinterpret_cast<uintptr_t>(matrix_address_);
+    uintptr_t address = matrix_address_.load(std::memory_order_acquire);
 
     if (!IsWritable(address, sizeof(GtaCameraMatrix))) {
         return;
@@ -1684,7 +1932,7 @@ void GtaCameraHook::WriteCameraMatrix(const XMMATRIX& rotation, const XMFLOAT4& 
     newMatrix.position[3] = position.w;
 
     if (!SafeWrite(address, &newMatrix, sizeof(newMatrix))) {
-        hook_ready_ = false;
+        hook_ready_.store(false, std::memory_order_release);
         auto& stats = VR::GetRuntimeStats();
         stats.cameraHookReady.store(false);
         return;
@@ -1762,6 +2010,10 @@ bool GtaCameraHook::LoadConfig(CameraConfig& outConfig) {
             outConfig.negateForward = ParseBool(value);
         } else if (key == "negateup") {
             outConfig.negateUp = ParseBool(value);
+        } else if (key == "resolvetimeoutsec") {
+            outConfig.resolveTimeoutSec = static_cast<int>(ParseInt(value, 30));
+        } else if (key == "backgroundretrysec") {
+            outConfig.backgroundRetrySec = static_cast<int>(ParseInt(value, 60));
         }
     }
 
@@ -1782,9 +2034,9 @@ bool GtaCameraHook::ResolveMatrixAddress(const CameraConfig& config, uintptr_t& 
         LOGSTR("GtaCameraHook: Using main module\n");
     }
 
-    uintptr_t patternAddr = PatternScanner::FindPattern(config.pattern.c_str(), module);
+    uintptr_t patternAddr = PatternScanner::FindPattern(config.pattern.c_str(), module, &worker_stop_);
     if (!patternAddr) {
-        LOGSTRF("GtaCameraHook: Pattern not found: %s\n", config.pattern.c_str());
+        LOGDBGF("GtaCameraHook: Pattern not found (or aborted): %s\n", config.pattern.c_str());
         return false;
     }
 

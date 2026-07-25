@@ -2,15 +2,20 @@
 
 #include "../VR/IVRBackend.hpp"
 #include "../VR/SharedSettings.hpp"
+#include "GtaCameraFov.hpp"  // complete type needed for LifetimeToken member
+#include <Windows.h>
 #include <DirectXMath.h>
+#include <atomic>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace OVRInject {
 namespace Game {
 
 class GtaGameState;  // Forward declaration
-class GtaCameraFov;
 
 /**
  * GtaCameraHook - Injects VR head pose into GTA V's camera system
@@ -26,11 +31,16 @@ public:
     GtaCameraHook(VR::IVRBackend* backend, GtaCameraFov* cameraFov = nullptr);
     ~GtaCameraHook();
 
-    // Try to find and hook the camera. Returns true on success.
+    // Starts camera resolution on the background worker thread and returns
+    // immediately. Does NOT scan on the calling (render) thread; the camera
+    // becomes ready asynchronously (poll IsReady). Returns false (never
+    // ready synchronously) - kept for source compatibility with callers
+    // that ignore the result.
     bool Hook();
 
     // Update the camera with the current VR head pose
     // Uses decoupling based on game state
+    // O(1) render-thread cost: consumes worker results via lock-free handoff.
     void Update(VR::Eye eye);
 
     // Update with explicit game state reference
@@ -61,6 +71,12 @@ private:
         bool negateRight = false;
         bool negateForward = false;
         bool negateUp = false;
+        // [camera] resolveTimeoutSec - max wall-clock seconds for camera
+        // resolution before giving up to mono mode (default 30).
+        int resolveTimeoutSec = 30;
+        // [camera] backgroundRetrySec - cheap background retry cadence after
+        // give-up (default 60; 0 = only manual recenter retries).
+        int backgroundRetrySec = 60;
     };
 
     // GTA camera matrix structure
@@ -77,18 +93,36 @@ private:
     bool IsReadable(uintptr_t address, size_t size) const;
     bool IsWritable(uintptr_t address, size_t size) const;
     bool TryResolveFromActiveCamera(uintptr_t& outAddress, uintptr_t& outCameraBase);
-    bool TryResolveFromMetadataObjects(uintptr_t& outAddress, uintptr_t& outCameraBase) const;
+    bool TryResolveFromMetadataObjects(uintptr_t& outAddress, uintptr_t& outCameraBase,
+                                       uint64_t deadlineTick) const;
     bool FindMatrixInCamera(uintptr_t cameraBase, uintptr_t& outAddress, size_t scanSize = 0x1000) const;
     bool FindMatrixViaPointerScan(uintptr_t base, uintptr_t& outAddress, uintptr_t& outCameraBase) const;
     bool FindCameraByMetadataScan(uintptr_t base, uintptr_t& outCameraBase) const;
     bool FindMetadataInCamera(uintptr_t cameraBase, uintptr_t& outMetadata) const;
     bool TryReadCameraHashes(uintptr_t cameraBase, uint32_t& outHashKey, uint32_t& outHashName) const;
-    bool AcceptMatrixCandidate(uintptr_t candidate, uintptr_t cameraBase);
     bool SafeRead(uintptr_t address, void* outData, size_t size) const;
     bool SafeReadPtr(uintptr_t address, uintptr_t& outValue) const;
     bool SafeWrite(uintptr_t address, const void* data, size_t size) const;
     bool ScoreMatrix(const GtaCameraMatrix& matrix, float& outScore) const;
     bool TryDirectMatrixScan(const CameraConfig& config, uintptr_t& outAddress);
+
+    // Background worker: all expensive camera resolution (full-module pattern
+    // scans, whole-process metadata sweeps) runs on this thread. The render
+    // thread only consumes validated candidates through the lock-free SPSC
+    // handoff below, keeping Update() O(1).
+    void StartWorker();
+    void StopWorker();
+    void WorkerMain();
+    DWORD WaitForWorkerEvent(uint32_t timeoutMs) const;
+    bool ShouldAbortScan(uint64_t deadlineTick) const;
+    bool RunResolutionPass(bool allowFullSweep, uint64_t deadlineTick, uint32_t passIndex);
+    void RunReadyRefresh();
+    // Worker-side, pure-read candidate validation (no writes, no calls into
+    // game code): metadata check + writability + two ScoreMatrix samples
+    // ~40ms apart, then publishes via the handoff.
+    bool ValidateAndPublishCandidate(uintptr_t candidate, uintptr_t cameraBase, const char* source);
+    // Render-thread side of the handoff: O(1) adopt of a validated candidate.
+    void ConsumeWorkerCandidate();
 
     // Core camera update logic
     void UpdateWithDecoupling(VR::Eye eye, bool isAiming);
@@ -111,9 +145,12 @@ private:
 
     VR::IVRBackend* backend_;
     CameraConfig config_;
-    void* matrix_address_ = nullptr;
+    // Render-thread-owned camera state. The worker NEVER writes these two;
+    // it publishes candidates via the handoff and Update() adopts them.
+    // Atomics because the worker reads them (ready check / refresh compare).
+    std::atomic<uint64_t> matrix_address_{0};
+    std::atomic<bool> hook_ready_{false};
     bool config_loaded_ = false;
-    bool hook_ready_ = false;
 
     // Decoupling state
     bool decoupling_enabled_ = true;
@@ -134,17 +171,38 @@ private:
     uint32_t update_count_ = 0;
     uint32_t write_success_count_ = 0;
 
-    // Active camera tracking (fallback scanning)
-    uintptr_t active_camera_base_ = 0;
-    uintptr_t pending_matrix_address_ = 0;
-    uintptr_t pending_camera_base_ = 0;
-    uint32_t pending_valid_frames_ = 0;
+    // Active camera tracking (written by the worker during scans and by the
+    // render thread when adopting a candidate - hence atomic).
+    std::atomic<uint64_t> active_camera_base_{0};
     mutable uintptr_t last_logged_camera_base_ = 0;
-    uint32_t last_camera_scan_ = 0;
     // Throttle for the whole-process metadata sweep (see metadataSweepIntervalSec
-    // in manifests/gtav_legacy.ini; default 5s).
+    // in manifests/gtav_legacy.ini; default 5s). Worker thread only.
     mutable uint64_t last_metadata_sweep_tick_ = 0;
-    GtaCameraFov* camera_fov_ = nullptr;
+    std::atomic<GtaCameraFov*> camera_fov_{nullptr};
+
+    // --- Background worker state --------------------------------------------
+    std::thread worker_thread_;
+    std::atomic<bool> worker_stop_{false};
+    std::atomic<bool> worker_started_{false};
+    HANDLE worker_wake_event_ = nullptr;  // auto-reset; signaled on stop/retry
+    // Fov scanner snapshot taken in StartWorker (object known-alive there);
+    // used by the worker only, always under worker_fov_token_'s lock.
+    GtaCameraFov* worker_fov_ = nullptr;
+    std::shared_ptr<GtaCameraFov::LifetimeToken> worker_fov_token_;
+
+    // Lock-free SPSC handoff (single producer = worker, single consumer =
+    // render Update()). Protocol: worker fills address/base/hashes with
+    // relaxed stores, then sets pending with release; the render thread
+    // acquires pending, reads the fields, clears pending. The worker never
+    // overwrites an unconsumed candidate.
+    std::atomic<uint64_t> handoff_address_{0};
+    std::atomic<uint64_t> handoff_base_{0};
+    std::atomic<uint64_t> handoff_hash_key_{0};
+    std::atomic<uint64_t> handoff_hash_name_{0};
+    std::atomic<bool> handoff_pending_{false};
+
+    // Set by RecenterPose (manual retry) - the worker runs one full pass.
+    std::atomic<bool> retry_requested_{false};
 };
 
 } // namespace Game

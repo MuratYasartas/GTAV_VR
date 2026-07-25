@@ -186,6 +186,7 @@
     <ClInclude Include="OpenXR\XRSession.hpp" />
     <ClInclude Include="OpenXR\XRSwapchain.hpp" />
     <ClInclude Include="OpenXR\XRViewManager.hpp" />
+    <ClInclude Include="Stereo\EyeDelivery.hpp" />
     <ClInclude Include="Stereo\StereoEngine.hpp" />
     <ClInclude Include="targetver.h" />
     <ClInclude Include="Vive\HMDRenderer.hpp" />

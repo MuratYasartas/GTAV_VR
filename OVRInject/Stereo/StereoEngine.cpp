@@ -22,6 +22,11 @@
 namespace OVRInject {
 namespace Stereo {
 
+// EyeDelivery uses plain int eye indices that must match VR::Eye.
+static_assert(static_cast<int>(VR::Eye::Left) == EyeDelivery::kLeft &&
+              static_cast<int>(VR::Eye::Right) == EyeDelivery::kRight,
+              "EyeDelivery eye indices must match VR::Eye");
+
 namespace {
 
 // Millisecond timer for engine-section instrumentation (QPC-backed).
@@ -289,7 +294,7 @@ StereoEngine& StereoEngine::Get() {
 }
 
 void StereoEngine::Initialize(VR::IVRBackend* backend) {
-    frameIndex_ = 0;
+    eyeDelivery_.Reset();
     lastLoggedMode_ = -1;
     loggedBackbuffer_ = false;
     horizonLockEngaged_ = false;
@@ -536,11 +541,16 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     // AER parity: the eye the game just rendered (and that the backbuffer
     // therefore contains) is frameIndex & 1. Outside AER the phase is pinned
     // to 0 so the first AER frame after a mode switch / camera-ready
-    // transition always captures the Left-rendered backbuffer.
+    // transition always captures the Left-rendered backbuffer. The full
+    // per-frame delivery plan (blit target, per-layer texture, camera-write
+    // eye) comes from the EyeDelivery state machine (Stereo/EyeDelivery.hpp);
+    // it advances only on completed frames, so pass-through frames cannot
+    // desync the blit parity from the camera-write parity.
     if (!wantAlternate) {
-        frameIndex_ = 0;
+        eyeDelivery_.Reset();
     }
-    VR::Eye renderEye = (frameIndex_ & 1) != 0 ? VR::Eye::Right : VR::Eye::Left;
+    const EyeDelivery::FramePlan aerPlan = eyeDelivery_.PlanAlternateEye();
+    VR::Eye renderEye = static_cast<VR::Eye>(aerPlan.renderEye);
 
     // --- Blit section: backbuffer -> eye texture(s) -------------------------
     double sectionStart = NowMs();
@@ -601,16 +611,30 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         backend->SubmitEyeTexture(VR::Eye::Left, monoTexture);
         backend->SubmitEyeTexture(VR::Eye::Right, monoTexture);
     } else if (wantAlternate) {
-        // AER: submit ONLY the freshly rendered eye. The other eye is
-        // reprojected by the runtime (ATW/ASW) from its last submission -
-        // that is the expected, intended behavior of alternating-eye
-        // rendering, not a missing frame.
-        if (!loggedAerSingleSubmit_) {
-            LOGSTR("StereoEngine: AER active - submitting only the freshly rendered eye; "
-                   "the other eye relies on runtime reprojection (expected)\n");
-            loggedAerSingleSubmit_ = true;
+        // AER eye delivery: submit BOTH layers every frame. The fresh eye's
+        // layer carries this frame's new blit; the stale eye's layer
+        // re-submits that eye's OWN persistent texture - its previous
+        // own-rendered frame - so each eye always displays its own viewpoint
+        // and there is no cross-eye contamination (layer i is backed by eye
+        // texture i; the single warmup frame after a reset, where the stale
+        // eye was never produced, borrows the fresh eye's texture - see
+        // EyeDelivery). The runtime's ATW/ASW still reprojects the stale
+        // eye's older content to the current pose: that is the intended AER
+        // behavior (ADR-0002), now made explicit instead of relying on the
+        // runtime's last-released-image retention (OpenXR: "xrEndFrame will
+        // use the most recently released swapchain image"; OpenVR holds the
+        // last submitted texture per eye).
+        if (!loggedAerDelivery_) {
+            LOGSTR("StereoEngine: AER active - submitting both layers per frame "
+                   "(fresh eye + the other eye's own previous frame; runtime reprojection covers timing)\n");
+            loggedAerDelivery_ = true;
         }
-        backend->SubmitEyeTexture(renderEye, hmdRenderer->GetEyeTexture(renderEye));
+        backend->SubmitEyeTexture(
+            VR::Eye::Left,
+            hmdRenderer->GetEyeTexture(static_cast<VR::Eye>(aerPlan.layerTexture[EyeDelivery::kLeft])));
+        backend->SubmitEyeTexture(
+            VR::Eye::Right,
+            hmdRenderer->GetEyeTexture(static_cast<VR::Eye>(aerPlan.layerTexture[EyeDelivery::kRight])));
     } else {
         // Z3D reprojection / plain stereo: both eyes were produced from this
         // frame's backbuffer, submit both.
@@ -619,40 +643,6 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     }
 
     Perf::PerfStats::Get().AddSubmitMs(NowMs() - sectionStart);
-
-    // --- Camera write section ------------------------------------------------
-    sectionStart = NowMs();
-
-    // (3) LATE-LATCH the head pose immediately before the camera write.
-    LatchHeadPose(backend);
-
-    // Vehicle horizon lock: snapshot the game's own camera rotation before the
-    // hook composes over it; the correction below removes the vehicle
-    // pitch/roll from the composed result.
-    bool horizonLock = ShouldApplyVehicleHorizonLock(services, cameraReady);
-    CameraMatrixSnapshot preSnapshot = {};
-    bool havePreSnapshot = horizonLock && TryReadGameCameraSnapshot(preSnapshot);
-
-    if (cameraHook) {
-        if (wantAlternate && cameraHook->IsReady()) {
-            // The game renders the OTHER eye next frame; write that eye's
-            // camera now so it is in place before the next game render.
-            VR::Eye writeEye = (renderEye == VR::Eye::Left) ? VR::Eye::Right : VR::Eye::Left;
-            cameraHook->Update(writeEye, gameState);
-        } else {
-            cameraHook->Update(VR::Eye::Left, gameState);
-        }
-
-        if (stereoSettings.recenterRequested.exchange(false)) {
-            cameraHook->RecenterPose();
-        }
-    }
-
-    if (havePreSnapshot && ApplyVehicleHorizonLockCorrection(preSnapshot)) {
-        horizonLockEngaged_ = true;
-    }
-
-    Perf::PerfStats::Get().AddCameraWriteMs(NowMs() - sectionStart);
 
     context->Release();
     pBuffer->Release();
@@ -669,7 +659,69 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     HRESULT result = services.originalPresent(pSwapChain,
                                               services.forceMirrorSync0 ? 0 : syncInterval,
                                               flags);
-    ++frameIndex_;
+
+    // --- Camera write section (AFTER the desktop-mirror Present) -------------
+    sectionStart = NowMs();
+
+    // Write-timing contract: this write must land after the game's render of
+    // the CURRENT frame and before the game's render of the NEXT frame - it
+    // is the next frame that is rendered with this eye's pose. Both points
+    // live on the game's render thread; hookedPresent runs on that thread
+    // between them, so ANY position inside the hook is ordered before the
+    // next render by program order (the one-frame delay this creates is the
+    // basis of the AER parity, see EyeDelivery). The position within the
+    // hook still matters because of the SECOND writer: the game itself
+    // refreshes this camera matrix from its own camera update (simulation
+    // side, pipelined against the render thread). If that refresh lands
+    // after our write, our matrix is overwritten before the next render
+    // reads it and the frame falls back to the game's own (mono, untracked)
+    // camera for one frame. Writing at the LATEST point still inside the
+    // hook - immediately after originalPresent returns, i.e. after any
+    // vsync / frame-latency block inside Present and any xrEndFrame/
+    // xrWaitFrame blocking in EndFrame, with no further hook work between
+    // the write and returning to the game - minimizes the window in which
+    // the game's refresh can land after us. Whether that refresh can EVER
+    // land after us is engine-internal and cannot be proven without the
+    // running game (docs/known-issues.md, UNVERIFIED); the working
+    // assumption - "last writer before the next render wins, and that is
+    // us" - is the same one the head-tracking write path has always relied
+    // on, and a permanently lost write would kill head tracking outright,
+    // not just stereo.
+
+    // (3) LATE-LATCH the head pose immediately before the camera write.
+    LatchHeadPose(backend);
+
+    // Vehicle horizon lock: snapshot the game's own camera rotation before the
+    // hook composes over it; the correction below removes the vehicle
+    // pitch/roll from the composed result.
+    bool horizonLock = ShouldApplyVehicleHorizonLock(services, cameraReady);
+    CameraMatrixSnapshot preSnapshot = {};
+    bool havePreSnapshot = horizonLock && TryReadGameCameraSnapshot(preSnapshot);
+
+    if (cameraHook) {
+        if (wantAlternate && cameraHook->IsReady()) {
+            // The game renders the OTHER eye next frame; write that eye's
+            // camera now so it is in place before the next game render.
+            cameraHook->Update(static_cast<VR::Eye>(aerPlan.cameraWriteEye), gameState);
+        } else {
+            cameraHook->Update(VR::Eye::Left, gameState);
+        }
+
+        if (stereoSettings.recenterRequested.exchange(false)) {
+            cameraHook->RecenterPose();
+        }
+    }
+
+    if (havePreSnapshot && ApplyVehicleHorizonLockCorrection(preSnapshot)) {
+        horizonLockEngaged_ = true;
+    }
+
+    Perf::PerfStats::Get().AddCameraWriteMs(NowMs() - sectionStart);
+
+    // One fully completed frame: advance the AER parity. Missed/pass-through
+    // frames never reach here, so they cannot desync blit parity from
+    // camera-write parity (both derive from the same counter).
+    eyeDelivery_.Advance();
     return result;
 }
 

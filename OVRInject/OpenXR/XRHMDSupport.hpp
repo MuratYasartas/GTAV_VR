@@ -262,6 +262,12 @@ private:
     void CopyTextureToSwapchain(ID3D11Texture2D* source, XR::Eye eye);
 
     /**
+     * Keyboard overlay toggle (Delete/Insert/F10), polled every frame
+     * regardless of session visibility so the menu always opens.
+     */
+    void PollOverlayKeyboardToggle();
+
+    /**
      * Update overlay input state and visibility
      */
     void UpdateOverlayUI(const XR::ControllerState& leftState,

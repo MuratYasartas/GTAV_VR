@@ -9,13 +9,30 @@ one release for the record) · ❓ UNVERIFIED
 
 ## Framework-wide
 
+- ⚪ **Render-thread freeze (observed live) — FIXED** — root cause: whole-process
+  memory sweeps ran synchronously on the render thread and repeated forever
+  (~0.1 fps = looked frozen). All camera/FOV resolution now runs on a bounded
+  background worker (30 s budget, clean give-up + mono fallback, cheap 60 s
+  retries); render thread is O(1) ~10–30 µs/frame. In-game confirmation pending. 2026-07-25
+- ⚪ **OpenVR submission hardened** — eye formats normalized away from TYPELESS
+  (silent-rejection risk, agent audit), Submit return codes logged rate-limited. 2026-07-25
+- ⚪ **XR initial swapchain clamp** — no more 5424×5356-vs-4096×4045 mismatch
+  strip / ~117 MB/eye waste on Crystal Super at init. 2026-07-25
+- 🟠 **Double frame pacer** — xrWaitFrame + desktop vsync share the render
+  thread (p99 risk). Mitigation ON by default: `desktopMirrorSyncOverride=1`.
+  Desktop mirror may tear (cosmetic only). 2026-07-25
 - 🔴 **Online guard did not exist before this milestone** — memory-writing
   builds prior to the OnlineGuard integration must never be used. (Being
   fixed: OnlineGuard module + Present-hook wiring; see ADR-0003.) 2026-07-24
 - 🟠 **Camera write race** — plugin writes the camera matrix from the Present
   (render) thread while game threads also write it → possible single-frame
-  jitter. Mitigation planned: ViewInverse-style correction quirk (LukeRoss
-  lesson). UNVERIFIED impact in-headset. 2026-07-24
+  jitter. Mitigation implemented 2026-07-25: the write now lands immediately
+  after the original Present returns (latest point strictly before the next
+  game render on the same thread; smallest overwrite window against the
+  game's own camera refresh — contract documented at the write site in
+  `OVRInject/Stereo/StereoEngine.cpp`). A stronger ViewInverse-style
+  correction quirk (LukeRoss lesson) remains unimplemented. UNVERIFIED
+  impact in-headset. 2026-07-25
 - 🟠 **Culling/LOD/shadow pop-in at VR FOV** — game culls against its original
   frustum. v1 mitigation: per-camera-type FOV override. Full culling-frustum
   patch is per-title RE work, not yet scheduled. 2026-07-24
@@ -36,9 +53,35 @@ one release for the record) · ❓ UNVERIFIED
 
 ## GTA V Legacy (primary)
 
-- ❓ Stereo is currently **fake** (2D backbuffer + optional depth displace).
-  True AER stereo is the Phase 4 deliverable; everything before its in-headset
-  validation is UNVERIFIED. 2026-07-24
+- ❓ **OpenXR session can sit pre-READY forever** (observed live with the
+  Pimax runtime: session created, overlay initialized, zero
+  "OpenXR session state" lines → `xrBeginSession` never runs → controllers
+  and overlay never come alive). `XRSession::PollEvents` now logs a
+  "waiting for session READY" heartbeat (~every 5 s) so the log proves
+  event pumping is alive; if heartbeats appear, the runtime (HMD idle,
+  focus held by another app, Pimax quirk) is what blocks READY — outside
+  mod code. Root cause UNVERIFIED pending HMD retest. 2026-07-25
+- ⚪ **Overlay keyboard parity on OpenXR** — `Delete`/`Insert`/`F10` now
+  toggle the OpenXR overlay exactly like the OpenVR path, polled every
+  frame even while the session is pre-READY or controllers are dead
+  (previously F10/Insert were polled only inside the renderable+located
+  frame path, so the menu could not be opened at all before visibility).
+  Overlay remains hidden by default (`GTAVR_OVERLAY=1` to force-show).
+  2026-07-25
+- ⚪ **Overlay usable without controllers** — physical mouse drives the
+  ImGui cursor (visible in-headset) and arrows+Enter drive ImGui keyboard
+  nav. Limit: nav keys also reach the game (no WndProc hook); text entry
+  unsupported. In-headset feel UNVERIFIED. 2026-07-25
+
+- ❓ **AER stereo implemented in code, UNVERIFIED in-headset.** The camera is
+  rewritten per frame with the next eye's pose (one-frame delay), each eye
+  texture holds that eye's own render, and both eye layers are submitted
+  every frame — fresh eye + the stale eye's own previous frame, never the
+  other eye's (`OVRInject/Stereo/EyeDelivery.hpp`, driven by
+  `StereoEngine::OnPresent`). Runtime ATW/ASW reprojects the stale eye.
+  Until validated in a real headset this remains UNVERIFIED; the mono
+  fallback (camera hook not ready) intentionally stays mono. Z3D depth
+  reprojection remains the fallback mode. 2026-07-25
 - ❓ Camera AOB patterns — manifest-seeded from prior code + `gtavr_camera.ini`
   (Enhanced-derived and GTAForums legacy patterns); which set matches each
   Legacy build is UNVERIFIED until resolved on the live build. 2026-07-24

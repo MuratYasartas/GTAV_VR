@@ -93,12 +93,14 @@
     <ClCompile Include="TestMain.cpp" />
     <ClCompile Include="TestProjection.cpp" />
     <ClCompile Include="TestEyeView.cpp" />
+    <ClCompile Include="TestEyeDelivery.cpp" />
     <ClCompile Include="Stubs.cpp" />
     <!-- Production code under test, compiled in directly (no OVRInject link). -->
     <ClCompile Include="..\OVRInject\OpenXR\XRCore.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="TestFramework.hpp" />
+    <ClInclude Include="..\OVRInject\Stereo\EyeDelivery.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

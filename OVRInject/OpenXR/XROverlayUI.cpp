@@ -525,6 +525,18 @@ void XROverlayUI::HandleInput(const OverlayInputState& leftState, const OverlayI
     io.NavInputs[ImGuiNavInput_Activate] = rightState.primaryPressed ? 1.0f : 0.0f;
     io.NavInputs[ImGuiNavInput_Cancel] = rightState.secondaryPressed ? 1.0f : 0.0f;
     io.NavInputs[ImGuiNavInput_Menu] = rightState.menuPressed ? 1.0f : 0.0f;
+
+    // Keyboard fallback for dead/unmapped controllers: arrows navigate,
+    // Left/Right adjust the focused slider, Enter activates, Esc cancels.
+    // ImGui applies its own key-repeat to held NavInputs. Limit: these
+    // keys also reach the game (no WndProc hook) - docs/user/comfort.md.
+    auto keyDown = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+    if (keyDown(VK_UP))     io.NavInputs[ImGuiNavInput_DpadUp] = 1.0f;
+    if (keyDown(VK_DOWN))   io.NavInputs[ImGuiNavInput_DpadDown] = 1.0f;
+    if (keyDown(VK_LEFT))   io.NavInputs[ImGuiNavInput_DpadLeft] = 1.0f;
+    if (keyDown(VK_RIGHT))  io.NavInputs[ImGuiNavInput_DpadRight] = 1.0f;
+    if (keyDown(VK_RETURN)) io.NavInputs[ImGuiNavInput_Activate] = 1.0f;
+    if (keyDown(VK_ESCAPE)) io.NavInputs[ImGuiNavInput_Cancel] = 1.0f;
 #endif
 }
 

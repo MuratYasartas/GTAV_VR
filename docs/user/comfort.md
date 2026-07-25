@@ -49,6 +49,27 @@ until you are comfortable in cars.
 - **Head-locked image during cutscenes** → that is the theater working as
   designed, not a freeze.
 
+## The settings overlay (in-headset)
+
+The settings menu is a head-locked panel — it follows your gaze.
+
+- **Open/close:** `Delete` or `Insert` (keyboard, always works — even before
+  controllers connect), `F10`, or the controller **menu button**
+  (both-grips / both-face-buttons combos also toggle).
+- **Point & click (controllers):** right thumbstick moves the cursor,
+  trigger = left click, grip = right click; left thumbstick scrolls.
+- **Mouse fallback (dead controllers):** the physical mouse drives the
+  overlay cursor (the ImGui cursor is visible in-headset even though the
+  desktop cursor is not); left/right click work. Requires the game window
+  focused; `GTAVR_MOUSE_CAPTURE=0` disables this.
+- **Keyboard fallback (dead controllers):** arrow keys navigate,
+  Left/Right adjust the focused slider, `Enter` activates, `Esc` cancels.
+
+Honest limits: the mod installs no keyboard hook, so nav keys also reach
+the game (arrows can move in-game menus/phone while the overlay is open —
+prefer adjusting while stationary). Text entry is not supported in-headset;
+numeric fields use sliders and +/- nudge buttons.
+
 ## Health notice
 
 Not for users under 13 (headset manufacturer guidance). Photosensitive

@@ -137,6 +137,20 @@ void XRSession::PollEvents() {
         return;
     }
 
+    // Heartbeat while stuck pre-SYNCHRONIZED: the log must prove event
+    // pumping is alive, so "runtime never sends READY" (HMD idle, another
+    // app holds focus, runtime quirk) is distinguishable from "our frame
+    // loop never polls". ~every 5s at 60 Hz.
+    if (current_state_ != SessionState::Synchronized &&
+        current_state_ != SessionState::Visible &&
+        current_state_ != SessionState::Focused) {
+        static int heartbeatFrames = 0;
+        if ((heartbeatFrames++ % 300) == 0) {
+            LOGSTRF("OpenXR: waiting for session READY (state=%s, poll #%d)\n",
+                    SessionStateToString(current_state_), heartbeatFrames);
+        }
+    }
+
     XrEventDataBuffer eventData = {XR_TYPE_EVENT_DATA_BUFFER};
 
     while (true) {
