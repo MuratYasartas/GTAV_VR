@@ -363,6 +363,18 @@ bool XRHMDSupport::BeginFrame() {
 
     // Poll events
     session_->PollEvents();
+    // Visibility gate: xrWaitFrame blocks indefinitely while the session is
+    // not visible/focused (e.g. the runtime's home holds the display, or the
+    // runtime never composites this session). Never freeze the game for that:
+    // degrade to pass-through frames until the session says it can render.
+    if (!session_->ShouldRender()) {
+        static int invisibleFrames = 0;
+        if ((invisibleFrames++ % 600) == 0) {
+            LOGDBGF("XRHMDSupport: session not renderable (state=%d) - pass-through frame\n",
+                    static_cast<int>(session_->GetCurrentState()));
+        }
+        return false;
+    }
 
     // Wait for frame
     if (!frame_manager_->WaitFrame()) {
