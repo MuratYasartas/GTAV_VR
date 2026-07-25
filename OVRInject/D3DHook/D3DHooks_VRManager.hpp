@@ -122,6 +122,20 @@ namespace VRMgr {
     void* create_dxgi_factory1_target_ = nullptr;
     void* create_dxgi_factory2_target_ = nullptr;
     void* create_swapchain_target_ = nullptr;
+    // Late-injection dummy device state (Kiero method; owned by
+    // CreateDummyDeviceAndHookPresent below). dummy_swapchain_ keeps ONE
+    // reference alive for the DLL lifetime so the tag pointer can never be
+    // recycled into a real swapchain; released in UninstallHooks.
+    std::atomic<IDXGISwapChain*> dummy_swapchain_{nullptr};
+    HWND dummy_window_ = nullptr;
+    // Swapchain whose vtable the Present hook was installed through; lets the
+    // dummy path tell whether it (vs a live game swapchain) landed the hook.
+    void* hooked_swapchain_ = nullptr;
+    // True when the global Present hook was installed via the dummy device,
+    // i.e. the game device/swapchain/factory all predate our injection.
+    bool late_injection_dummy_hooked_ = false;
+    // Initialize() idempotency guard.
+    std::atomic<bool> initialize_started_{false};
     HWND game_window_ = nullptr;
     // desktopMirrorSyncOverride=1 (gtavr_settings.ini [Performance]) or
     // GTAVR_DESKTOP_MIRROR_SYNC0=1 forces the desktop mirror Present sync
@@ -1864,7 +1878,20 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             return Original_PresentHook(pSwapChain, SyncInterval, Flags);
         }
 
+        // Late-injection dummy device: tagged at init, never presented by us
+        // and never submitted to the XR pipeline. Pass straight through if it
+        // ever shows up here (defensive - it should not; we never call
+        // Present on it). This check sits BEFORE the first_present init so
+        // InitializeOnFirstPresent can only bind to the game's real
+        // swapchain (the first non-dummy one seen here).
+        if (pSwapChain == dummy_swapchain_.load(std::memory_order_acquire)) {
+            return Original_PresentHook(pSwapChain, SyncInterval, Flags);
+        }
+
         if (first_present) {
+            if (late_injection_dummy_hooked_) {
+                LOGSTR("D3DHooks_VRManager: hooked into existing game swapchain (late injection)\n");
+            }
             if (!InitializeOnFirstPresent(pSwapChain)) {
                 vr_disabled_inert_.store(true);
                 return Original_PresentHook(pSwapChain, SyncInterval, Flags);
@@ -1981,14 +2008,23 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
      * Install the Present + ResizeBuffers hooks on a swapchain's vtable.
      * MinHook patches the target function's code, and COM objects created by
      * the same DXGI implementation share one function body, so hooking the
-     * vtable entry of one swapchain effectively covers every swapchain the
-     * game creates later (including a device recreated after device-lost).
+     * vtable entry of one swapchain effectively covers every swapchain on the
+     * system: ones the game creates later (including a device recreated after
+     * device-lost) AND, via the late-injection dummy device, ones that
+     * already existed before we were injected.
      * Idempotent: only the first swapchain wins; later ones are ignored.
      */
     void InstallSwapChainHooks(IDXGISwapChain* pSwapChain, const char* origin) {
         if (!pSwapChain) {
             return;
         }
+        // Creation proxies can fire on any thread (the game's render thread,
+        // or our init thread running the late-injection dummy creation);
+        // serialize so two simultaneous swapchains cannot race into a double
+        // MH_CreateHook on the same target (the loser would MH_RemoveHook the
+        // winner's live hook).
+        static std::mutex install_mutex;
+        std::lock_guard<std::mutex> install_lock(install_mutex);
         if (present_hook_installed) {
             LOGSTRF("D3DHooks_VRManager: Ignoring additional swap chain (%s) after primary Present hook\n", origin);
             return;
@@ -2009,6 +2045,7 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         }
         present_hook_target_ = presentTarget;
         present_hook_installed = true;
+        hooked_swapchain_ = pSwapChain;
         LOGSTRF("D3DHooks_VRManager: Hooked Present at vtable index %d (via %s)\n", presentIndex, origin);
 
         if (MH_CreateHook(resizeTarget, hookedResizeBuffers, (void**)&Original_ResizeBuffersHook) == MH_OK &&
@@ -2222,6 +2259,123 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
     }
 
     /**
+     * Late-injection fallback (Kiero dummy-device method).
+     *
+     * When the mod is injected into an ALREADY-RUNNING game, the game's
+     * device + swapchain + DXGI factory all predate our hooks and none of the
+     * creation-path proxies ever fires again. IDXGISwapChain vtables are
+     * per-D3D11-driver, identical for every swapchain on the system, so we
+     * synchronously create a HIDDEN dummy device+swapchain (offscreen 8x8,
+     * never presented) through the hooked D3D11CreateDeviceAndSwapChain
+     * export: the call lands in our own Proxy, which runs the existing
+     * InstallSwapChainHooks path on the dummy's vtable -> Present and
+     * ResizeBuffers become hooked globally, INCLUDING the game's pre-existing
+     * swapchain (same vtable addresses).
+     *
+     * The dummy never reaches the XR pipeline: we never call Present on it,
+     * and hookedPresent additionally skips the tagged pointer defensively, so
+     * InitializeOnFirstPresent binds to the first NON-dummy (game) swapchain.
+     * The swapchain (which keeps the dummy device alive) and its hidden
+     * window stay referenced until UninstallHooks so the tag address can
+     * never be recycled into a real swapchain. No-op if Present is already
+     * hooked. Called from Initialize() on the init thread - never from
+     * DllMain (window + driver creation would take the loader lock).
+     */
+    static void CreateDummyDeviceAndHookPresent() {
+        if (present_hook_installed) {
+            return; // a live swapchain already landed the hook
+        }
+
+        HMODULE d3d11 = GetModuleHandleA("d3d11.dll");
+        PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN createFn = d3d11
+            ? reinterpret_cast<PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN>(
+                  GetProcAddress(d3d11, "D3D11CreateDeviceAndSwapChain"))
+            : nullptr;
+        if (!createFn) {
+            LOGWNDF("D3DHooks_VRManager: late-injection: dummy swapchain creation failed - D3D11CreateDeviceAndSwapChain unavailable\n");
+            return;
+        }
+
+        // Hidden 8x8 offscreen window: created without WS_VISIBLE, never
+        // shown, never presented to.
+        WNDCLASSEXA wc = {};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = DefWindowProcA;
+        wc.hInstance = GetModuleHandleA(nullptr);
+        wc.lpszClassName = "GTAVR_DummySwapchainWnd";
+        if (!RegisterClassExA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            LOGWNDF("D3DHooks_VRManager: late-injection: dummy window class registration failed (err=%lu)\n",
+                    static_cast<unsigned long>(GetLastError()));
+            return;
+        }
+        HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "GTAVR Dummy",
+                                    WS_OVERLAPPEDWINDOW, 0, 0, 8, 8,
+                                    nullptr, nullptr, wc.hInstance, nullptr);
+        if (!hwnd) {
+            LOGWNDF("D3DHooks_VRManager: late-injection: dummy window creation failed (err=%lu)\n",
+                    static_cast<unsigned long>(GetLastError()));
+            return;
+        }
+
+        DXGI_SWAP_CHAIN_DESC sd = {};
+        sd.BufferCount = 1;
+        sd.BufferDesc.Width = 8;
+        sd.BufferDesc.Height = 8;
+        sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        sd.OutputWindow = hwnd;
+        sd.SampleDesc.Count = 1;
+        sd.Windowed = TRUE;
+        sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+        IDXGISwapChain* swapChain = nullptr;
+        ID3D11Device* device = nullptr;
+        ID3D11DeviceContext* context = nullptr;
+        // Deliberately the hooked export: this routes through
+        // Proxy_D3D11CreateDeviceAndSwapChain, which runs
+        // InstallSwapChainHooks on the dummy's vtable synchronously.
+        HRESULT hr = createFn(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+                              nullptr, 0, D3D11_SDK_VERSION,
+                              &sd, &swapChain, &device, nullptr, &context);
+        if (FAILED(hr)) {
+            // Last resort; WARP vtables may differ from the hardware driver,
+            // so the hook is not guaranteed to match the game's swapchain.
+            hr = createFn(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+                          nullptr, 0, D3D11_SDK_VERSION,
+                          &sd, &swapChain, &device, nullptr, &context);
+            if (SUCCEEDED(hr)) {
+                LOGWNDF("D3DHooks_VRManager: late-injection: hardware dummy device failed; fell back to WARP - vtable match not guaranteed\n");
+            }
+        }
+        if (FAILED(hr)) {
+            LOGWNDF("D3DHooks_VRManager: late-injection: dummy swapchain creation failed (hr=0x%08lx) - relying on creation-path hooks + watchdog\n",
+                    static_cast<unsigned long>(hr));
+            DestroyWindow(hwnd);
+            return;
+        }
+
+        if (context) { context->Release(); }
+        if (device) { device->Release(); }
+        // The swapchain holds the device alive; keep one swapchain reference
+        // (and the window) until UninstallHooks - see the tag-reuse note in
+        // the function comment above.
+
+        dummy_window_ = hwnd;
+        dummy_swapchain_.store(swapChain, std::memory_order_release);
+
+        if (present_hook_installed && hooked_swapchain_ == swapChain) {
+            late_injection_dummy_hooked_ = true;
+            LOGSTR("D3DHooks_VRManager: late-injection: dummy swapchain created, Present hooked globally\n");
+        } else if (present_hook_installed) {
+            // A live game swapchain won the race while the dummy was being
+            // created - equally good; the dummy just stays tagged/idle.
+            LOGSTR("D3DHooks_VRManager: late-injection: Present already hooked via a live swapchain; dummy kept tagged but unused\n");
+        } else {
+            LOGWNDF("D3DHooks_VRManager: late-injection: dummy swapchain created but Present hook did not install - mod stays inert unless a creation hook fires\n");
+        }
+    }
+
+    /**
      * Swapchain watchdog: if no swapchain was hooked within N seconds of
      * Initialize() (e.g. late injection after the device already existed and
      * no new swapchain is ever created), log clearly and stay inert.
@@ -2295,6 +2449,21 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         if (create_dxgi_factory2_target_) { MH_RemoveHook(create_dxgi_factory2_target_); create_dxgi_factory2_target_ = nullptr; }
         if (create_swapchain_target_) { MH_RemoveHook(create_swapchain_target_); create_swapchain_target_ = nullptr; }
         MH_Uninitialize();
+
+        // Late-injection dummy device: hooks are disabled/removed and no
+        // hooked frame can still be in flight, so the tagged swapchain
+        // (whose reference kept the dummy device alive) and its hidden
+        // window can finally be released.
+        IDXGISwapChain* dummy = dummy_swapchain_.exchange(nullptr);
+        if (dummy) {
+            dummy->Release();
+        }
+        if (dummy_window_) {
+            DestroyWindow(dummy_window_);
+            dummy_window_ = nullptr;
+        }
+        hooked_swapchain_ = nullptr;
+        late_injection_dummy_hooked_ = false;
     }
 
     /**
@@ -2306,15 +2475,25 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
      * IDXGIFactory::CreateSwapChain - together these catch swapchains created
      * after our init even when the AndSwapChain export is never used.
      *
-     * Kiero-style alternative (documented, deliberately NOT used): create a
-     * dummy window plus our own D3D11 device+swapchain at init, read the
-     * vtable addresses from it, hook those, then destroy it. That yields the
-     * same function addresses we already obtain from live objects, at the
-     * cost of spinning up a second D3D device inside the host (driver and
-     * VR-runtime side effects). If none of the object-based hooks sees a
-     * swapchain within the watchdog window, we log and stay inert instead.
+     * Late injection (the game was already running, so its device/swapchain/
+     * factory predate our hooks and none of the above fires again): right
+     * after the creation hooks go in, we synchronously create a hidden dummy
+     * D3D11 device+swapchain through the hooked export (Kiero dummy-device
+     * method - see CreateDummyDeviceAndHookPresent). The proxy runs
+     * InstallSwapChainHooks on the dummy's vtable, which patches the shared
+     * driver implementation and therefore hooks Present/ResizeBuffers for
+     * EVERY swapchain on the system, including the game's pre-existing one.
+     * The dummy is tagged and excluded from the XR path; the watchdog below
+     * remains as the diagnostic if even the dummy path fails.
+     *
+     * Idempotent: a second call logs and returns immediately.
      */
     void Initialize() {
+        if (initialize_started_.exchange(true)) {
+            LOGSTR("D3DHooks_VRManager: Initialize called twice - ignored\n");
+            return;
+        }
+
         MH_STATUS status = MH_Initialize();
         if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) {
             LOGSTR("D3DHooks_VRManager: MinHook initialization failed.\n");
@@ -2367,8 +2546,14 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             }
         }
 
+        // Late injection: hook Present/ResizeBuffers globally via a hidden
+        // dummy device+swapchain (Kiero method). Runs synchronously here so
+        // the hook is live before the watchdog starts; no-op if a live
+        // swapchain already landed the hook above.
+        CreateDummyDeviceAndHookPresent();
+
         // Late-injection watchdog: logs clearly and stays inert if no
-        // swapchain ever shows up.
+        // swapchain ever shows up (i.e. the dummy path also failed).
         watchdog_thread_ = CreateThread(nullptr, 0, SwapchainWatchdogThread, nullptr, 0, nullptr);
     }
 
