@@ -349,12 +349,26 @@ namespace VRMgr {
         rightInput.primaryPressed = rightState.buttons.primaryPressed;
         rightInput.secondaryPressed = rightState.buttons.secondaryPressed;
 
-        if (leftState.buttons.menuJustPressed || rightState.buttons.menuJustPressed) {
+        // Overlay toggle: controller menu button OR keyboard (Delete/Insert).
+        // The keyboard edge-detect lets flat-screen users drive the same UI
+        // before/without controllers, and is the fallback when the controller
+        // action mapping is unavailable.
+        bool overlayToggle = leftState.buttons.menuJustPressed || rightState.buttons.menuJustPressed;
+        static bool keyboardToggleHeld = false;
+        const bool keyboardToggleDown = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0 ||
+                                        (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+        if (keyboardToggleDown && !keyboardToggleHeld) {
+            overlayToggle = true;
+        }
+        keyboardToggleHeld = keyboardToggleDown;
+
+        if (overlayToggle) {
             overlay_visible = !overlay_visible;
             overlay_ui->SetVisible(overlay_visible);
             if (overlay) {
                 overlay->SetVisible(overlay_visible);
             }
+            LOGDBGF("D3DHooks_VRManager: overlay visibility -> %s\n", overlay_visible ? "visible" : "hidden");
         }
 
         if (overlay_visible) {
