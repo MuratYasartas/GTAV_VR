@@ -7,6 +7,8 @@ log live. Story Mode only - the mod hard-disables in GTA Online by design.
 
 Run:  python tools/gtavr_panel.py   (elevated = same rights as the game)
 """
+import ctypes as C
+import ctypes.wintypes as W
 import os
 import subprocess
 import sys
@@ -29,16 +31,47 @@ LOG_CANDIDATES = [
     os.path.join(GAME_DIR, "gtavrInjectLog.txt"),
 ]
 
+# Never spawn a visible console from pythonw (that flashing cmd window).
+_NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
+
+
+def run_quiet(cmd, **kw):
+    """subprocess.run without a console window flash."""
+    kw.setdefault("creationflags", _NO_WINDOW)
+    kw.setdefault("capture_output", True)
+    kw.setdefault("text", True)
+    kw.setdefault("errors", "ignore")
+    return subprocess.run(cmd, **kw)
+
+
+def _pid_of(name):
+    """Process id by exe name via Toolhelp32 snapshot - no subprocess at all."""
+    name = name.lower()
+    snap = C.windll.kernel32.CreateToolhelp32Snapshot(2, 0)
+    if snap == -1:
+        return None
+
+    class E(C.Structure):
+        _fields_ = [("dwSize", W.DWORD), ("cntUsage", W.DWORD), ("th32ProcessID", W.DWORD),
+                    ("th32DefaultHeapID", C.POINTER(C.c_ulong)), ("th32ModuleID", W.DWORD),
+                    ("cntThreads", W.DWORD), ("th32ParentProcessID", W.DWORD),
+                    ("pcPriClassBase", C.c_long), ("dwFlags", W.DWORD),
+                    ("szExeFile", C.c_char * 260)]
+
+    e = E()
+    e.dwSize = C.sizeof(E)
+    ok = C.windll.kernel32.Process32First(snap, C.byref(e))
+    while ok:
+        if e.szExeFile.decode("ascii", "ignore").lower() == name:
+            C.windll.kernel32.CloseHandle(snap)
+            return e.th32ProcessID
+        ok = C.windll.kernel32.Process32Next(snap, C.byref(e))
+    C.windll.kernel32.CloseHandle(snap)
+    return None
+
 
 def game_pid():
-    out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
-                         text=True, errors="ignore").stdout.lower()
-    for line in out.splitlines():
-        if line.startswith('"gta5.exe"'):
-            parts = line.split('","')
-            if len(parts) > 1 and parts[1].strip('"').isdigit():
-                return int(parts[1].strip('"'))
-    return None
+    return _pid_of("gta5.exe")
 
 
 def newest_log():
@@ -141,23 +174,22 @@ class Panel(tk.Tk):
     # ---------- actions ----------
     def preflight(self):
         def work():
-            r = subprocess.run([GTAVOVR, "--check"], env=self.base_env(),
-                               capture_output=True, text=True, errors="ignore")
-            self.say("info", r.stdout + "\n")
+            r = run_quiet([GTAVOVR, "--check"], env=self.base_env())
+            self.say("info", (r.stdout or "") + "\n")
         self.run_bg(work)
 
     def start_game(self):
         self.say("info", f"starting {PLAY_GTAV} ...\n")
-        subprocess.Popen(["cmd", "/c", "start", "", PLAY_GTAV], shell=False)
+        subprocess.Popen([PLAY_GTAV], creationflags=_NO_WINDOW)
 
     def start_steamvr(self):
         vrserver = r"C:\Program Files (x86)\Steam\steamapps\common\SteamVR\bin\win64\vrserver.exe"
         if os.path.exists(vrserver):
             self.say("info", "starting SteamVR (vrserver)...\n")
-            subprocess.Popen(["cmd", "/c", "start", "", vrserver], shell=False)
+            subprocess.Popen([vrserver], creationflags=_NO_WINDOW)
         else:
             self.say("info", "starting SteamVR via steam:// ...\n")
-            subprocess.Popen(["cmd", "/c", "start", "", "steam://rungameid/250820"], shell=False)
+            os.startfile("steam://rungameid/250820")
 
     def inject(self):
         pid = game_pid()
@@ -171,8 +203,7 @@ class Panel(tk.Tk):
         self.say("verdict", f"--- injecting backend={env['GTAVR_BACKEND']} verbose={self.verbose.get()} into pid {pid} ---\n")
 
         def work():
-            r = subprocess.run([GTAVOVR], env=env, capture_output=True, text=True,
-                               errors="ignore", timeout=120)
+            r = run_quiet([GTAVOVR], env=env, timeout=120)
             out = (r.stdout or "") + (r.stderr or "")
             self.say("info", out + "\n")
             if "Injection successful" in out:
@@ -188,9 +219,8 @@ class Panel(tk.Tk):
 
     def collect(self):
         self.run_bg(lambda: self.say(
-            "info", subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                                    "-File", os.path.join(REPO, "tools", "collect_logs.ps1")],
-                                   capture_output=True, text=True, errors="ignore").stdout + "\n"))
+            "info", (run_quiet(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                "-File", os.path.join(REPO, "tools", "collect_logs.ps1")]).stdout or "") + "\n"))
 
     # ---------- ticks ----------
     def tick_status(self):
