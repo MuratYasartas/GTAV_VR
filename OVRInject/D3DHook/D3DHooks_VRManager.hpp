@@ -1480,6 +1480,33 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         // per-frame verdict poll lives at the top of hookedPresent.
         Game::OnlineGuard::Get().Initialize();
 
+        // Boot summary: one structured block capturing the environment, so a
+        // single log file answers "what was wrong" without guesswork.
+        {
+            char procPath[MAX_PATH] = {};
+            GetModuleFileNameA(nullptr, procPath, MAX_PATH);
+            const char* procName = strrchr(procPath, '\\');
+            procName = procName ? procName + 1 : procPath;
+            LOGSTR("=================== GTAVR session summary ===================\n");
+            LOGSTRF("  mod build: %s %s | host: %s (pid %lu)\n",
+                    __DATE__, __TIME__, procName, GetCurrentProcessId());
+            LOGSTRF("  log file: %s | verbose: %s\n", LOGGetPath(), LOG_IsVerbose() ? "on" : "off");
+
+            Game::BuildManifest& bootManifest = Game::BuildManifest::Get();
+            bootManifest.Initialize(); // idempotent; logs its own detect lines
+            const Game::BuildInfo& bi = bootManifest.GetBuildInfo();
+            if (bootManifest.IsBuildSupported()) {
+                LOGSTRF("  game build: %s (%s) -> manifest section [%s]%s\n",
+                        bi.fileVersion.c_str(), bi.moduleName.c_str(), bi.section.c_str(),
+                        bi.verified ? " (verified)" : " (UNVERIFIED values)");
+            } else {
+                LOGSTRF("  game build: %s (%s, size 0x%llx) -> NO manifest section - "
+                        "camera patterns unavailable, mod runs WITHOUT camera control\n",
+                        bi.fileVersion.c_str(), bi.moduleName.c_str(),
+                        static_cast<unsigned long long>(bi.moduleSize));
+            }
+        }
+
         // Settings key (default: preserve the game's sync interval).
         force_mirror_sync0_ = ReadDesktopMirrorSyncOverride();
         if (force_mirror_sync0_) {
@@ -1497,6 +1524,22 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&device)) || !device) {
             LOGSTR("D3DHooks_VRManager: Failed to get D3D11 device from swapchain.\n");
             return false;
+        }
+
+        {
+            IDXGIDevice* dxgiDevice = nullptr;
+            if (SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice)) && dxgiDevice) {
+                IDXGIAdapter* adapter = nullptr;
+                if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter)) && adapter) {
+                    DXGI_ADAPTER_DESC ad = {};
+                    adapter->GetDesc(&ad);
+                    LOGSTRF("  gpu: %ls (vendor 0x%04x device 0x%04x, %.0f MB dedicated)\n",
+                            ad.Description, ad.VendorId, ad.DeviceId,
+                            ad.DedicatedVideoMemory / 1048576.0);
+                    adapter->Release();
+                }
+                dxgiDevice->Release();
+            }
         }
 
         // Phase 5/6: comfort runtime keys + HUD identification (both no-op
@@ -1699,6 +1742,19 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
 
             // Input layout not needed for fullscreen vertex shader
 
+            {
+                VR::IVRBackend* activeBackend = vrManager ? vrManager->GetBackend() : nullptr;
+                const auto& stereo = VR::GetStereoSettings();
+                int mode = stereo.mode.load();
+                const char* modeName = (mode == 1) ? "alternate-eye" : (mode == 2) ? "dual-pass(experimental)" : "reprojection(Z3D)";
+                if (activeBackend) {
+                    LOGSTRF("=== GTAVR MOD ACTIVE === runtime=%s stereo=%s camera=%s\n",
+                            vrManager->GetActiveRuntimeName(), modeName,
+                            VR::GetRuntimeStats().cameraHookReady.load() ? "hooked" : "NOT resolved (see GtaCameraHook lines)");
+                } else {
+                    LOGSTR("=== GTAVR MOD INERT === VR backend unavailable (runtime not detected?) - pass-through mode\n");
+                }
+            }
 
             device->Release();
             context->Release();

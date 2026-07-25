@@ -14,6 +14,7 @@ namespace {
 constexpr char kLogFileName[] = "gtavrInjectLog.txt";
 
 enum LogLevel {
+	LOG_LEVEL_DEBUG,
 	LOG_LEVEL_INFO,
 	LOG_LEVEL_WARN,
 	LOG_LEVEL_ERR,
@@ -21,10 +22,66 @@ enum LogLevel {
 
 const char* LevelTag(LogLevel level) {
 	switch (level) {
+	case LOG_LEVEL_DEBUG: return "DBG";
 	case LOG_LEVEL_WARN: return "WARN";
 	case LOG_LEVEL_ERR:  return "ERR";
 	default:             return "INFO";
 	}
+}
+
+// Verbose (debug-channel) flag, evaluated once. On when env GTAVR_VERBOSE is
+// set to anything but "0"/empty, or when gtavr_settings.ini contains
+// [Debug] verbose=1 (searched in GTAVR_SETTINGS_DIR, then beside the exe).
+// NOTE: the Windows INI API silently fails on LF-only files, so the INI is
+// scanned manually.
+bool ComputeVerbose() {
+	char envVal[16] = {};
+	DWORD len = GetEnvironmentVariableA("GTAVR_VERBOSE", envVal, sizeof(envVal));
+	if (len > 0 && len < sizeof(envVal) && !(envVal[0] == '0' && envVal[1] == '\0')) {
+		return true;
+	}
+
+	char iniPath[MAX_PATH] = {};
+	len = GetEnvironmentVariableA("GTAVR_SETTINGS_DIR", iniPath, MAX_PATH);
+	if (len > 0 && len < MAX_PATH) {
+		strncat_s(iniPath, sizeof(iniPath), "\\gtavr_settings.ini", _TRUNCATE);
+	} else {
+		char modulePath[MAX_PATH] = {};
+		DWORD mlen = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
+		if (mlen > 0 && mlen < MAX_PATH) {
+			char* lastSlash = strrchr(modulePath, '\\');
+			if (lastSlash) {
+				*(lastSlash + 1) = '\0';
+				snprintf(iniPath, sizeof(iniPath), "%sgtavr_settings.ini", modulePath);
+			}
+		}
+	}
+	if (iniPath[0] == '\0') return false;
+
+	FILE* fp = nullptr;
+	if (fopen_s(&fp, iniPath, "rb") != 0 || !fp) return false;
+	bool inDebug = false, verbose = false;
+	char line[512];
+	while (fgets(line, sizeof(line), fp)) {
+		char* p = line;
+		while (*p == ' ' || *p == '\t') ++p;
+		if (_strnicmp(p, "[Debug]", 7) == 0) { inDebug = true; continue; }
+		if (p[0] == '[') { inDebug = false; continue; }
+		if (inDebug && _strnicmp(p, "verbose", 7) == 0) {
+			char* eq = strchr(p, '=');
+			if (eq) {
+				while (*++eq == ' ') {}
+				verbose = (*eq == '1' || *eq == 't' || *eq == 'T' || *eq == 'y' || *eq == 'Y');
+			}
+		}
+	}
+	fclose(fp);
+	return verbose;
+}
+
+bool IsVerbose() {
+	static const bool verbose = ComputeVerbose();
+	return verbose;
 }
 
 void GetLogPath(char* outPath, size_t outSize, const char* fileName) {
@@ -170,4 +227,25 @@ void LOGFATALF(const char* format, ...)
 	va_start(args, format);
 	LogWrite(LOG_LEVEL_ERR, format, args);
 	va_end(args);
+}
+
+void LOGDBGF(const char* format, ...)
+{
+	if (!IsVerbose()) return;
+	va_list args;
+	va_start(args, format);
+	LogWrite(LOG_LEVEL_DEBUG, format, args);
+	va_end(args);
+}
+
+bool LOG_IsVerbose() {
+	return IsVerbose();
+}
+
+const char* LOGGetPath() {
+	static char path[MAX_PATH] = {};
+	if (path[0] == '\0') {
+		GetLogPath(path, sizeof(path), kLogFileName);
+	}
+	return path;
 }

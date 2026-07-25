@@ -303,12 +303,21 @@ void OnlineGuard::Initialize() {
     std::string detail;
     if (CheckCommandLineOnline(detail)) {
         RequestDisable(detail.c_str());
+    } else {
+        LOGDBGF("OnlineGuard: command-line check clean\n");
     }
 
     // Prime the BattlEye check so an already-active BE trips immediately
     // instead of on the first polled frame.
     if (CheckBattlEyeActive(detail)) {
         RequestDisable(detail.c_str());
+    } else {
+        LOGSTR("OnlineGuard: BattlEye not detected in/around this process (story-mode posture OK)\n");
+    }
+    if (ShouldDisableMod()) {
+        LOGWNDF("OnlineGuard: initialization complete - mod DISABLED at startup (see reason above)\n");
+    } else {
+        LOGSTR("OnlineGuard: initialization complete - mod allowed (story mode posture)\n");
     }
 }
 

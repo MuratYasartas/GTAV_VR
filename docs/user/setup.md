@@ -69,5 +69,30 @@ vanilla again — the proxy DLL is the only loader, and nothing else persists.
   `GTAVR_SETTINGS_DIR`, `XR_RUNTIME_JSON`.
 - In-headset: open the settings overlay (see comfort.md) — no alt-tab needed.
 
+## 6. Reporting a problem
+
+Every refusal or degradation is logged in plain language — the log is the
+first thing to check, and the first thing to share.
+
+1. **Turn on verbose logging**: set env `GTAVR_VERBOSE=1` (or add
+   `[Debug] verbose=1` to `gtavr_settings.ini`), then reproduce the issue.
+   Verbose adds per-decision traces: every camera pattern tried and its
+   result, guard detector verdicts, and hook install events.
+2. **Collect the bundle**: run `tools\collect_logs.bat`. It gathers the
+   inject log, shim log, perf CSV, any crash minidumps, config/manifest
+   snapshots, and a `sysinfo.txt` (OS/GPU/driver) into a timestamped
+   `GTAVR_LogBundle_*` folder on your Desktop. No game files included.
+3. **Read the landmarks** (in `gtavrInjectLog.txt`):
+   - `GTAVR session summary` — mod build, game build, manifest match, GPU,
+     log path. Answers "what environment" in one block.
+   - `GTAVR MOD ACTIVE` / `GTAVR MOD INERT` — the one-line verdict and why.
+   - `OnlineGuard: *** MOD HARD-DISABLED *** reason: ...` — the kill-switch
+     fired; the reason names the detector.
+   - `GtaCameraHook: SUCCESS!` / `All resolution methods failed` — camera
+     pattern resolution outcome (with verbose: each attempt).
+   - `CrashDump` lines + `*.dmp` — if it crashed, the dump is in the bundle.
+4. Share the bundle folder. p99 frametime problems belong in
+   `gtavr_perf.csv` (press `F11` in-game to force an export).
+
 Details: `docs/01-architecture.md` (design), `docs/known-issues.md` (honest
 list of what does not work yet).

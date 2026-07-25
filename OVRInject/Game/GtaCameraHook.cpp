@@ -310,6 +310,8 @@ bool GtaCameraHook::Hook() {
                 fallbackConfig.pointerOffsets = entry.pointerOffsets;
 
                 uintptr_t candidate = 0;
+                LOGDBGF("GtaCameraHook: trying manifest pattern %zu/%zu (source: %s)\n",
+                        i + 1, entries.size(), entry.source.c_str());
                 if (TryDirectMatrixScan(fallbackConfig, candidate)) {
                     candidateFound = true;
                     LOGSTRF("GtaCameraHook: Manifest pattern %zu matched (source: %s)\n",
@@ -318,6 +320,9 @@ bool GtaCameraHook::Hook() {
                         LOGSTRF("GtaCameraHook: SUCCESS! Camera matrix at 0x%p\n", matrix_address_);
                         return true;
                     }
+                    LOGWNDF("GtaCameraHook: manifest pattern %zu matched but candidate REJECTED by validation\n", i + 1);
+                } else {
+                    LOGDBGF("GtaCameraHook: manifest pattern %zu: no match\n", i + 1);
                 }
             }
         } else {

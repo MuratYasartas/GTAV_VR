@@ -16,6 +16,18 @@ void LOGWNDF(const char* format, ...);   // WARN -> log file + debug output (no 
 void LOGOUTF(const char* format, ...);   // INFO -> log file + debug output
 void LOGFATALF(const char* format, ...); // ERR  -> log file + debug output (never terminates the host process)
 
+// Debug/diagnostic channel. Written ONLY when verbose logging is enabled via
+// env GTAVR_VERBOSE=1 or gtavr_settings.ini [Debug] verbose=1. Use for
+// per-decision traces (pattern scans, guard polls, camera resolution) that
+// would be too noisy at INFO.
+void LOGDBGF(const char* format, ...);   // DBG  -> log file + debug output (filtered)
+bool LOG_IsVerbose();                    // true when the debug channel is on
+const char* LOGGetPath();                // resolved log file path (never null)
+
 inline void LOGSTR(const char* message) {
 	LOGSTRF("%s", message);
+}
+
+inline void LOGDBG(const char* message) {
+	if (LOG_IsVerbose()) LOGDBGF("%s", message);
 }
