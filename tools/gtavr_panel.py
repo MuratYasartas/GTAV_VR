@@ -140,6 +140,8 @@ class Panel(tk.Tk):
         self.after(1500, self.tick_log)
         self.say("verdict", "Panel ready. Flow: Start game -> wait for Story Mode -> INJECT MOD.\n")
         self.say("verdict", "If the headset shows nothing with OpenXR (Pimax), quit the game and retry with OpenVR (SteamVR).\n")
+        self.say("info", "Runtime posture: if OpenXR session stays pre-READY (log shows 'waiting for session READY'), the Pimax home holds the display - set Pimax Play to 'no default environment', or use OpenVR.\n")
+        self.say("info", "In-game overlay: Delete/Insert/F10 (or controller menu). Perf CSV: F11. Logs stream below.\n")
 
     # ---------- helpers ----------
     def say(self, tag, text):

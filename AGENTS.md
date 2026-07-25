@@ -25,17 +25,26 @@ This repo builds a single-player-only VR injection mod for RAGE-engine games
   posture); exit codes 0 ok-to-try, 2 unsupported build, 3 runtime missing,
   4 injection failure.
 - `OVRInject/` holds the core VR injection logic, D3D hooks, OpenXR/OpenVR
-  backends, overlay UI, and shaders. Subdirs: `D3DHook/`, `VR/` (backend
+  backends, overlay UI, and shaders. Subdirs: `D3DHook/` (Present/ResizeBuffers
+  hooks, dummy-device late-injection, HudRedirect), `VR/` (backend
   abstraction), `OpenXR/`, `Game/` (title plugin: camera/FOV/state, OnlineGuard,
-  BuildManifest), `Overlay/`, `Vive/` (being pruned to HMDRenderer).
+  BuildManifest — all pattern resolution on a bounded background worker; the
+  render thread is O(1)), `Stereo/` (StereoEngine + EyeDelivery AER state
+  machine, ComfortRuntime), `Perf/` (PerfStats frametime ring + CSV export),
+  `Overlay/`, `Vive/` (HMDRenderer only).
 - `OVRInjectShim/` is the shipped loader: a proxy `dxgi.dll` that loads
   `OVRInject.dll` (ADR-0005).
-- `tools/` holds `install.bat` / `uninstall.bat`: idempotent game-dir
-  installer (backs up a foreign `dxgi.dll`, verifies copies) and exact
-  reverser (restores the backup). Smoke-test against throwaway dirs only.
+- `tools/` holds `install.bat` / `uninstall.bat` (idempotent game-dir
+  installer/reverser; smoke-test against throwaway dirs only),
+  `GTAVR-Play.bat` (one-click game launcher), `GTAVR-Panel.bat` +
+  `gtavr_panel.py` (control panel: start game, backend switch, inject, live
+  log tail), `collect_logs.bat/.ps1` (support bundle to Desktop),
+  `scan_patterns.py` + `verify_camera_chain.py` (new-build pattern
+  resolution against the running game).
 - `samples/D3D11Cube/` is the Phase 2 vertical-slice target + golden-image
   harness (`check_golden.py`).
-- `tests/` holds the unit-test runner and lifecycle/soak harnesses.
+- `tests/` holds the unit-test runner (21 suites incl. TestEyeDelivery) and
+  the injection-lifecycle harness (`injection_lifecycle.py`).
 - `manifests/` holds per-title, per-build signature/offset/hash INIs.
 - `docs/` holds feasibility, architecture, ADRs, legal, known-issues,
   test-matrix, perf-report, hud-postfx, and `docs/user/` guides.

@@ -45,6 +45,66 @@ static bool FileExists(const std::wstring& path) {
 	return (attrs != INVALID_FILE_ATTRIBUTES) && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+static std::wstring DirNameOf(const std::wstring& path); // fwd (defined below)
+
+// Copy `src` to `dst` when dst is missing or older than src. Returns true when
+// dst ends up present and current.
+static bool SyncFile(const std::wstring& src, const std::wstring& dst) {
+	if (!FileExists(src)) return false;
+	bool copy = true;
+	WIN32_FILE_ATTRIBUTE_DATA s = {}, d = {};
+	if (GetFileAttributesExW(src.c_str(), GetFileExInfoStandard, &s) &&
+		GetFileAttributesExW(dst.c_str(), GetFileExInfoStandard, &d)) {
+		copy = (CompareFileTime(&s.ftLastWriteTime, &d.ftLastWriteTime) > 0);
+	}
+	if (copy) {
+		if (!CopyFileW(src.c_str(), dst.c_str(), FALSE)) return false;
+	}
+	return FileExists(dst);
+}
+
+// Stage everything the injected DLL needs next to it, so the mod never
+// depends on the game's environment (the "manifest not found" and
+// LoadLibrary-import failures both came from missing staging):
+//  - openvr_api.dll / openxr_loader.dll beside GTAVOVR.exe (imports resolve
+//    for the target process via its own dir/PATH)
+//  - gtav_legacy.ini beside the injected OVRInject.dll (BuildManifest reads
+//    <dll dir>\gtav_legacy.ini or GTAVR_SETTINGS_DIR)
+// Dev layout: GTAVOVR.exe at <repo>\x64\Release -> repo root two levels up.
+static int StageRuntimeFiles(const std::wstring& moduleDir, const std::wstring& dllDir) {
+	int staged = 0;
+	std::wstring repoRoot = DirNameOf(DirNameOf(moduleDir));
+
+	const wchar_t* runtimeDlls[] = {
+		L"openvr_api.dll", L"openxr_loader.dll",
+	};
+	for (const wchar_t* name : runtimeDlls) {
+		std::wstring dst = moduleDir + L"\\" + name;
+		if (FileExists(dst)) continue;
+		std::wstring src = repoRoot + L"\\ThirdParty\\openvr\\bin\\x64\\" + name;
+		if (!FileExists(src)) {
+			src = repoRoot + L"\\ThirdParty\\openxr\\bin\\x64\\" + name;
+		}
+		if (SyncFile(src, dst)) {
+			printf("[stage] %ls synced -> beside GTAVOVR.exe\n", name);
+			staged++;
+		} else {
+			printf("[stage] WARNING: %ls missing (not beside GTAVOVR.exe, no ThirdParty source) - injection may fail on imports\n", name);
+		}
+	}
+
+	std::wstring manifestDst = dllDir + L"\\gtav_legacy.ini";
+	std::wstring manifestSrc = moduleDir + L"\\gtav_legacy.ini";
+	if (!FileExists(manifestSrc)) manifestSrc = moduleDir + L"\\manifests\\gtav_legacy.ini";
+	if (!FileExists(manifestSrc)) manifestSrc = repoRoot + L"\\manifests\\gtav_legacy.ini";
+	if (SyncFile(manifestSrc, manifestDst)) {
+		printf("[stage] gtav_legacy.ini synced -> %ls\n", dllDir.c_str());
+		staged++;
+	}
+	return staged;
+}
+
+
 static std::wstring BaseNameOf(const std::wstring& path) {
 	size_t pos = path.find_last_of(L"\\/");
 	return (pos == std::wstring::npos) ? path : path.substr(pos + 1);
@@ -660,6 +720,15 @@ int wmain(int argc, wchar_t* argv[]) {
 		printf("Missing OVRInject.dll (place it next to GTAVOVR.exe or set GTAV_INSTALL_DIR).\n");
 		return GTAVR_EXIT_INJECTION_FAILURE;
 	}
+
+	// Stage runtime DLLs + manifest next to the payload, then print the
+	// one-line readiness verdict (all preflight gates + staging results).
+	int staged = StageRuntimeFiles(GetModuleDir(), DirNameOf(dllPath));
+	bool manifestReady = FileExists(DirNameOf(dllPath) + L"\\gtav_legacy.ini");
+	bool runtimesReady = FileExists(GetModuleDir() + L"\\openvr_api.dll") &&
+	                     FileExists(GetModuleDir() + L"\\openxr_loader.dll");
+	printf("[ready] build=OK runtime=OK battleye=clean manifest=%s openvr/openxr_dlls=%s staged=%d -> injectable\n",
+		manifestReady ? "OK" : "MISSING", runtimesReady ? "OK" : "MISSING", staged);
 
 	DWORD pid = existingPid;
 	if (pid == 0) {

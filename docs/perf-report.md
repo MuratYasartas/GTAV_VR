@@ -40,10 +40,18 @@ over 60 s is a P0 defect, not a "settings suggestion".
 | Engine section timers | `OVRInject/Stereo/StereoEngine` — QPC-timed camera-write / blit / submit accumulators fed into `PerfStats` | done |
 | CSV export | `PerfStats::ExportCsv` → `gtavr_perf.csv` (one row per second: timestamp, frames, p50, p99, p99.9, drops), on `ShutdownVR`/unload and on demand via F11 (polled on the render thread; the mod has no WndProc hook) | done |
 | Cross-thread perf mirrors | `VR::RuntimeStats` atomics (`fps`, `frametimeP50Ms/P99Ms/P999Ms`) updated once per second | done |
-| Overlay frametime/p99 display | read API landed: `PerfStats::GetSnapshot()` + RuntimeStats mirrors; overlay rendering itself is next wave | pending wave 4 |
-| Slice-app baseline (framework overhead only) | `samples/D3D11Cube` + PerfStats | pending wave 3 |
+| Overlay frametime/p99 display | `XROverlayUI` Performance tab — live fps + p50/p99/p99.9 + drop estimate + engine-section averages from `PerfStats::GetSnapshot()` | done |
+| Slice-app baseline (framework overhead only) | `samples/D3D11Cube` + PerfStats | pending (wave 4 harness) |
+| Initial swapchain clamp | `XRHMDSupport` initial `Create()` now uses `ComputeSafeRenderSize` (no 5424×5356 mismatch strip, no ~117 MB/eye waste) | done |
+| Double-pacer mitigation | `desktopMirrorSyncOverride=1` default (xrWaitFrame is the single pacer; desktop mirror may tear, cosmetic only) | done |
+| Overlay interaction cost | overlay renders only when visible; eye/overlay swapchain waits use 1 ms timeout with skip | done |
 
 ## 4. Results (UNVERIFIED — no hardware run yet)
+
+On-paper estimate (code audit, RTX 5090 ≈1792 GB/s): mod CPU ≈ **0.3–0.6 ms/frame**,
+mod GPU ≈ **0.2–0.5 ms/frame** — both far inside the 2.0/1.0 ms budgets. The
+frame budget is spent by the *game* (CPU-limited), not the mod. 72 Hz is the
+recommended default refresh; 90 Hz must be gated on measured `frames`/`p99_ms`.
 
 | Config | Scenario | p50 | p99 | p99.9 | Dropped | Reproj % | Verdict |
 |---|---|---|---|---|---|---|---|

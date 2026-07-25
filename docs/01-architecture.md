@@ -133,18 +133,24 @@ Modes (ADR-0002): **AER default**, dual-pass experimental, Z3D fallback.
 ```
 Per Present (game render thread):
   if OnlineGuard.IsDisabled() → pass through, no camera writes, no XR submit
-  backend->BeginFrame()                       // xrWaitFrame/xrBeginFrame (pacing, §7)
-  eye = AER ? frameIndex & 1 : both
+  backend->BeginFrame()                       // visibility-gated: skipped entirely when
+                                              // the session is not VISIBLE/FOCUSED
+                                              // (never blocks the render thread)
+  plan = EyeDelivery.Plan(frameIndex)         // AER: which eye is fresh, per-layer
+                                              // texture mapping (layer i <- eye tex i)
+  blit backbuffer → fresh eye texture         // stale eye keeps its OWN previous frame
+  submit BOTH layers every EndFrame           // fresh eye new frame, stale eye its own
+                                              // last frame (runtime ATW/ASW covers it)
+  original Present (desktop mirror)
   pose = backend->LateLatchPose()             // sampled NOW, not at game-camera time
-  plugin->ApplyCamera(eye, pose, ipd, fov)    // view=(P_eye·P_head)^-1 composed with
-                                              // game camera basis; asymmetric proj
-  render → IRHI eye target(s)                 // AER: game renders this frame with the
-                                              //   current eye's camera (existing behavior)
-                                              // dual-pass: force second scene render (experimental)
-                                              // Z3D: blit + depth-displace (existing fallback)
-  backend->SubmitEyeTexture / EndFrame        // stale eye reprojected by runtime (AER)
+  plugin->ApplyCamera(nextEye, pose, ipd)     // LATEST safe point: right after Present
+                                              // returns, before the next game render
   PerfStats.Record(frame)                     // p99 ring buffer, Phase 8
 ```
+
+Camera resolution (patterns/sweeps) never runs on this thread: a bounded
+background worker in `Game/` resolves and hands off candidates (30 s budget,
+clean give-up to mono, cheap periodic retry); the render thread adopts in O(1).
 
 - **IPD always from the runtime** (`xrLocateViews` eye poses / OpenVR eye-to-head), never
   a constant; world scale depends on it.

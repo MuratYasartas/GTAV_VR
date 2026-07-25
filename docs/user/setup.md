@@ -64,12 +64,28 @@ vanilla again — the proxy DLL is the only loader, and nothing else persists.
 
 - `gtavr_settings.ini` — stereo mode (AER default / Z3D fallback), comfort
   (vignette, snap turn, horizon lock), world scale, performance.
-- `gtavr_camera.ini` — per-camera-type FOV overrides (culling mitigation).
+- `gtavr_camera.ini` — per-camera-type FOV overrides (culling mitigation),
+  camera-resolution bounds (`resolveTimeoutSec`, `backgroundRetrySec`).
 - Env: `GTAVR_BACKEND=openxr|openvr`, `GTAVR_LOG_DIR`,
-  `GTAVR_SETTINGS_DIR`, `XR_RUNTIME_JSON`.
+  `GTAVR_SETTINGS_DIR`, `XR_RUNTIME_JSON`, `GTAVR_VERBOSE=1` (debug channel).
 - In-headset: open the settings overlay (see comfort.md) — no alt-tab needed.
 
-## 6. Reporting a problem
+## 6. Runtime posture (Pimax)
+
+If the mod logs `MOD ACTIVE` but the HMD shows only the Pimax home, the
+runtime is holding the display (the log shows `OpenXR: waiting for session
+READY` heartbeats). In order of preference:
+
+1. **Pimax Play → disable the home environment** ("no default environment"),
+  and disable stray OpenXR layers (OpenXR Toolkit leftovers).
+2. **SteamVR as the OpenXR runtime**: SteamVR → Settings → Developer → set
+  SteamVR as OpenXR runtime (`ActiveRuntime` → `steamxr_win64.json`), keep
+  `GTAVR_BACKEND=openxr`.
+3. **OpenVR backend**: start SteamVR, use `GTAVR_BACKEND=openvr` (panel
+  radio button). Submission is Scene-type and takes the display from
+  SteamVR Home automatically.
+
+## 7. Reporting a problem
 
 Every refusal or degradation is logged in plain language — the log is the
 first thing to check, and the first thing to share.
