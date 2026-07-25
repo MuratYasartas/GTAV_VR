@@ -11,9 +11,16 @@ set "BIN=%REPO%\x64\Release"
 set "CFG=%USERPROFILE%\gtavr_play.ini"
 
 rem --- 1) Elevation: the game runs as admin; injection needs to match.
-net session >nul 2>&1
+rem --- fltmc works even when the Server service is off; the retry guard
+rem --- prevents an infinite self-relaunch loop if elevation fails.
+fltmc >nul 2>&1
 if errorlevel 1 (
     if defined GTAVR_SKIP_ELEVATE goto :noelev
+    if defined GTAVR_ELEVATED_RETRY (
+        echo Could not obtain administrator rights - continuing anyway.
+        goto :noelev
+    )
+    set GTAVR_ELEVATED_RETRY=1
     echo Requesting administrator rights ^(needed to inject into the game^)...
     powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs"
     exit /b
