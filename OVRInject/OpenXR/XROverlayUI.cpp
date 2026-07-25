@@ -642,6 +642,7 @@ void XROverlayUI::RenderWorldSettings() {
         changed = true;
     }
     changed |= ImGui::SliderFloat("Stereo IPD (m)", &settings_.stereoIPD, 0.04f, 0.08f, "%.4f");
+    ImGui::SetItemTooltip("Fallback only: the IPD reported by the VR runtime overrides this value whenever available.");
     changed |= ImGui::Checkbox("Head Tracking", &settings_.headTracking);
     changed |= ImGui::Checkbox("Position Tracking", &settings_.positionTracking);
     if (settings_.stereoMode != 0 || settings_.headLookEnabled) {
@@ -854,11 +855,17 @@ void XROverlayUI::RenderPerformanceSettings() {
 
     bool changed = false;
 
-    changed |= ImGui::Checkbox("Async Reprojection", &settings_.asyncReprojection);
-    ImGui::SetItemTooltip("Enable runtime reprojection for smoother visuals at lower framerates");
     int runtime = VR::GetRuntimeStats().activeRuntime.load();
-    if (runtime == 2) {
-        ImGui::TextDisabled("OpenXR runtime manages async reprojection; this toggle may be ignored.");
+    bool openxrRuntime = (runtime == 2);
+    // OpenXR has no consumer for this toggle (only the OpenVR backend writes
+    // it through to SteamVR) - grey it out instead of letting users think it
+    // works on the OpenXR runtime.
+    if (openxrRuntime) ImGui::BeginDisabled();
+    changed |= ImGui::Checkbox("Async Reprojection", &settings_.asyncReprojection);
+    if (openxrRuntime) ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Enable runtime reprojection for smoother visuals at lower framerates (OpenVR only)");
+    if (openxrRuntime) {
+        ImGui::TextDisabled("Informational on OpenXR: the runtime manages reprojection itself.");
     }
 
     changed |= ImGui::SliderFloat("Render Scale", &settings_.renderScale, 0.5f, 2.0f, "%.1f");
@@ -956,8 +963,10 @@ void XROverlayUI::RenderDebugInfo() {
     ImGui::Text("Debug Information");
     ImGui::Spacing();
 
-    ImGui::Checkbox("Show Debug Info", &settings_.showDebugInfo);
-    ImGui::Checkbox("Show Controller Models", &settings_.showControllerModels);
+    bool changed = false;
+    changed |= ImGui::Checkbox("Show Debug Info", &settings_.showDebugInfo);
+    changed |= ImGui::Checkbox("Show Controller Models", &settings_.showControllerModels);
+    if (changed) NotifySettingsChanged();
 
     ImGui::Separator();
     if (!settings_.showDebugInfo) {
@@ -1050,9 +1059,11 @@ bool XROverlayUI::LoadSettings(const char* filename) {
         std::string key = line.substr(0, eq);
         std::string value = line.substr(eq + 1);
 
-        // Trim whitespace
-        while (!key.empty() && isspace(key.back())) key.pop_back();
-        while (!value.empty() && isspace(value.front())) value.erase(0, 1);
+        // Trim whitespace (both ends - CRLF files otherwise parse every
+        // bool key as false because the value is "1\r").
+        while (!key.empty() && isspace((unsigned char)key.back())) key.pop_back();
+        while (!value.empty() && isspace((unsigned char)value.front())) value.erase(0, 1);
+        while (!value.empty() && isspace((unsigned char)value.back())) value.pop_back();
 
         // Parse values
         if (key == "worldScale") settings_.worldScale = std::stof(value);

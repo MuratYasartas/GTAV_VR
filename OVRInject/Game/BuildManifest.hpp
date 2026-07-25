@@ -75,6 +75,13 @@ public:
     // separately - a parsed INI can still lack a section for this build).
     bool Initialize();
 
+    // Test/diagnostic support: parses the INI at `path` and forces the build
+    // to the named section, bypassing FileVersion detection. Unit tests run
+    // outside the game process, where DetectBuild can never match a [bNNNN]
+    // section. Returns false when the file cannot be parsed or the section
+    // does not exist. Not used by production runtime paths.
+    bool InitializeForTest(const std::wstring& path, const std::string& sectionName);
+
     bool IsLoaded() const { return loaded_; }
     bool IsBuildSupported() const { return build_supported_; }
     const BuildInfo& GetBuildInfo() const { return build_info_; }

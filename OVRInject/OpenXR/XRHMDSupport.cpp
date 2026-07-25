@@ -1,5 +1,6 @@
 #include "XRHMDSupport.hpp"
 #include "../Log.hpp"
+#include "../Stereo/ComfortRuntime.hpp"
 #include "../VR/SharedSettings.hpp"
 
 #include <algorithm>
@@ -853,6 +854,15 @@ void XRHMDSupport::ApplyOverlaySettings(const XR::VRSettings& settings) {
     comfort.vignetteEnabled.store(settings.vignetteEnabled);
     comfort.vignetteIntensity.store(settings.vignetteIntensity);
 
+    // Phase 5/6 comfort keys have no slot in VR::SharedSettings; they live in
+    // Stereo::ComfortRuntimeSettings. The OpenVR path already live-applies them
+    // (ApplyOverlaySettingsOpenVR in D3DHooks_VRManager.hpp) - do the same here
+    // so the overlay takes effect immediately on OpenXR too, instead of only at
+    // next launch via LoadComfortRuntimeFromIni.
+    auto& comfortRuntime = Stereo::GetComfortRuntime();
+    comfortRuntime.vehicleHorizonLock.store(settings.vehicleHorizonLock);
+    comfortRuntime.smoothTurnSpeedDeg.store(settings.smoothTurnSpeed);
+
     auto& stereo = VR::GetStereoSettings();
     stereo.mode.store(settings.stereoMode);
     stereo.stereoIPD.store(settings.stereoIPD);
@@ -945,6 +955,28 @@ void XRHMDSupport::ApplyOverlaySettings(const XR::VRSettings& settings) {
     }
     if (std::fabs(effectiveScale - render_scale_) > 0.001f) {
         RequestSwapchainResize(requestedScale);
+    }
+
+    // User-visible confirmation that overlay edits reached the live pipeline.
+    // INFO level on purpose: verbose logging may be off in-game, and "settings
+    // have no effect" reports need positive evidence the apply path ran.
+    // Rate-limited because ImGui sliders fire continuously while dragged.
+    static uint64_t lastApplyLogTick = 0;
+    uint64_t nowTick = GetTickCount64();
+    if (nowTick - lastApplyLogTick >= 1000) {
+        lastApplyLogTick = nowTick;
+        LOGSTRF("XRHMDSupport: Settings applied - mode=%d renderScale=%.2f world=%.2f ipd=%.4f snap=%d/%.0f vign=%d/%.2f horizonLock=%d fov=%d/%.0f\n",
+                settings.stereoMode,
+                static_cast<double>(settings.renderScale),
+                static_cast<double>(settings.worldScale),
+                static_cast<double>(settings.stereoIPD),
+                settings.snapTurning ? 1 : 0,
+                static_cast<double>(settings.snapTurnAngle),
+                settings.vignetteEnabled ? 1 : 0,
+                static_cast<double>(settings.vignetteIntensity),
+                settings.vehicleHorizonLock ? 1 : 0,
+                settings.fovOverride ? 1 : 0,
+                static_cast<double>(settings.fovGlobal));
     }
 }
 

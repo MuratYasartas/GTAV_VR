@@ -457,9 +457,13 @@ bool GtaCameraHook::RunResolutionPass(bool allowFullSweep, uint64_t deadlineTick
     manifest.Initialize();
     std::vector<CameraPatternEntry> entries;
     if (manifest.IsBuildSupported() && manifest.GetCameraPatterns(entries)) {
+        // INFO on purpose: with verbose off this is the ONLY visibility into
+        // which resolution stage runs and where it fails.
+        LOGSTRF("GtaCameraHook: Trying build manifest patterns (%zu entries, section [%s])...\n",
+                entries.size(), manifest.GetBuildInfo().section.c_str());
         for (size_t i = 0; i < entries.size(); ++i) {
             if (ShouldAbortScan(deadlineTick)) {
-                LOGDBGF("GtaCameraHook: pass %u aborted at manifest pattern %zu/%zu\n",
+                LOGSTRF("GtaCameraHook: pass %u aborted at manifest pattern %zu/%zu (time budget)\n",
                         passIndex, i + 1, entries.size());
                 return false;
             }
@@ -474,21 +478,26 @@ bool GtaCameraHook::RunResolutionPass(bool allowFullSweep, uint64_t deadlineTick
             fallbackConfig.pointerOffsets = entry.pointerOffsets;
 
             uintptr_t candidate = 0;
-            LOGDBGF("GtaCameraHook: trying manifest pattern %zu/%zu (source: %s)\n",
-                    i + 1, entries.size(), entry.source.c_str());
+            LOGSTRF("GtaCameraHook: manifest pattern %zu/%zu: trying '%s' (patternOffset=%lld, matrixOffset=0x%llX, source: %s)\n",
+                    i + 1, entries.size(), entry.pattern.c_str(),
+                    static_cast<long long>(entry.patternOffset),
+                    static_cast<unsigned long long>(entry.matrixOffset),
+                    entry.source.c_str());
             if (TryDirectMatrixScan(fallbackConfig, candidate)) {
-                LOGDBGF("GtaCameraHook: manifest pattern %zu matched (source: %s)\n",
-                        i + 1, entry.source.c_str());
+                LOGSTRF("GtaCameraHook: manifest pattern %zu/%zu: candidate 0x%p - validating\n",
+                        i + 1, entries.size(), reinterpret_cast<void*>(candidate));
                 if (ValidateAndPublishCandidate(candidate, 0, "manifest")) {
                     return true;
                 }
-                LOGDBGF("GtaCameraHook: manifest pattern %zu candidate REJECTED by validation\n", i + 1);
+                LOGSTRF("GtaCameraHook: manifest pattern %zu/%zu: candidate REJECTED by validation (reason above)\n",
+                        i + 1, entries.size());
             } else {
-                LOGDBGF("GtaCameraHook: manifest pattern %zu: no match\n", i + 1);
+                LOGSTRF("GtaCameraHook: manifest pattern %zu/%zu: no usable matrix (scan detail above)\n",
+                        i + 1, entries.size());
             }
         }
     } else if (passIndex == 1) {
-        LOGDBGF("GtaCameraHook: no manifest patterns for this build (unsupported build)\n");
+        LOGSTR("GtaCameraHook: no manifest camera patterns for this build (unsupported build or empty section)\n");
     }
 
     // 4) Whole-process metadata sweep - expensive (~7.7s+ per sweep on a live
@@ -510,7 +519,7 @@ bool GtaCameraHook::RunResolutionPass(bool allowFullSweep, uint64_t deadlineTick
         }
     }
 
-    LOGDBGF("GtaCameraHook: resolution pass %u end: no candidate (%llums)\n",
+    LOGSTRF("GtaCameraHook: resolution pass %u end: no candidate (%llums)\n",
             passIndex, GetTickCount64() - passStart);
     return false;
 }
@@ -547,30 +556,32 @@ bool GtaCameraHook::ValidateAndPublishCandidate(uintptr_t candidate, uintptr_t c
     // Pure-read validation (no writes to candidate memory, no calls into
     // game code): metadata presence, writability, then two ScoreMatrix
     // samples ~40ms apart for stability.
+    // Rejection verdicts are INFO (not DBG): with verbose off they are the
+    // only way to see WHY a resolved candidate was not adopted.
     if (cameraBase) {
         uintptr_t meta = 0;
         if (!FindMetadataInCamera(cameraBase, meta)) {
-            LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: no camera metadata\n",
+            LOGSTRF("GtaCameraHook: candidate 0x%p (%s) REJECTED: no camera metadata\n",
                     reinterpret_cast<void*>(candidate), source);
             return false;
         }
     }
 
     if (!IsWritable(candidate, sizeof(GtaCameraMatrix))) {
-        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: not writable\n",
+        LOGSTRF("GtaCameraHook: candidate 0x%p (%s) REJECTED: not writable\n",
                 reinterpret_cast<void*>(candidate), source);
         return false;
     }
 
     GtaCameraMatrix first = {};
     if (!SafeRead(candidate, &first, sizeof(first))) {
-        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: read failed\n",
+        LOGSTRF("GtaCameraHook: candidate 0x%p (%s) REJECTED: read failed\n",
                 reinterpret_cast<void*>(candidate), source);
         return false;
     }
     float score = 0.0f;
     if (!ScoreMatrix(first, score)) {
-        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: implausible matrix\n",
+        LOGSTRF("GtaCameraHook: candidate 0x%p (%s) REJECTED: implausible matrix\n",
                 reinterpret_cast<void*>(candidate), source);
         return false;
     }
@@ -585,14 +596,14 @@ bool GtaCameraHook::ValidateAndPublishCandidate(uintptr_t candidate, uintptr_t c
     GtaCameraMatrix second = {};
     float score2 = 0.0f;
     if (!SafeRead(candidate, &second, sizeof(second)) || !ScoreMatrix(second, score2)) {
-        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) REJECTED: failed stability re-read\n",
+        LOGSTRF("GtaCameraHook: candidate 0x%p (%s) REJECTED: failed stability re-read\n",
                 reinterpret_cast<void*>(candidate), source);
         return false;
     }
 
     // Publish. Never overwrite an unconsumed candidate.
     if (handoff_pending_.load(std::memory_order_acquire)) {
-        LOGDBGF("GtaCameraHook: candidate 0x%p (%s) deferred: previous handoff unconsumed\n",
+        LOGSTRF("GtaCameraHook: candidate 0x%p (%s) deferred: previous handoff unconsumed\n",
                 reinterpret_cast<void*>(candidate), source);
         return false;
     }
@@ -608,7 +619,7 @@ bool GtaCameraHook::ValidateAndPublishCandidate(uintptr_t candidate, uintptr_t c
     handoff_hash_key_.store(hashKey, std::memory_order_relaxed);
     handoff_hash_name_.store(hashName, std::memory_order_relaxed);
     handoff_pending_.store(true, std::memory_order_release);
-    LOGDBGF("GtaCameraHook: candidate 0x%p ACCEPTED (%s, score=%.3f) - published to render thread\n",
+    LOGSTRF("GtaCameraHook: candidate 0x%p ACCEPTED (%s, score=%.3f) - published to render thread\n",
             reinterpret_cast<void*>(candidate), source, score);
     return true;
 }
@@ -931,8 +942,10 @@ bool GtaCameraHook::FindCameraByMetadataScan(uintptr_t base, uintptr_t& outCamer
 }
 
 bool GtaCameraHook::TryDirectMatrixScan(const CameraConfig& config, uintptr_t& outAddress) {
-    // This function scans for a camera matrix directly without following pointer chains
-    // It's used as a fallback when pointer-based resolution fails
+    // Resolves one pattern entry (config or build-manifest) end to end: AOB
+    // scan, RIP-relative chain, pointer walk, then a bounded plausibility
+    // scan around base+matrixOffset. Failures are logged at INFO so a camera
+    // that never resolves is diagnosable without verbose logging.
 
     HMODULE module = GetModuleHandleW(config.module.empty() ? L"GTA5.exe" : config.module.c_str());
     if (!module) {
@@ -941,8 +954,12 @@ bool GtaCameraHook::TryDirectMatrixScan(const CameraConfig& config, uintptr_t& o
 
     uintptr_t patternAddr = PatternScanner::FindPattern(config.pattern.c_str(), module, &worker_stop_);
     if (!patternAddr) {
+        LOGSTRF("GtaCameraHook: direct-scan: pattern NOT FOUND in module image: %s\n",
+                config.pattern.c_str());
         return false;
     }
+    LOGSTRF("GtaCameraHook: direct-scan: pattern matched at 0x%p\n",
+            reinterpret_cast<void*>(patternAddr));
 
     uintptr_t addr = patternAddr + config.patternOffset;
 
@@ -959,23 +976,31 @@ bool GtaCameraHook::TryDirectMatrixScan(const CameraConfig& config, uintptr_t& o
     if (!config.relativeOffsets.empty()) {
         for (int64_t offset : config.relativeOffsets) {
             if (!IsReadable(addr + offset, sizeof(int32_t))) {
+                LOGSTRF("GtaCameraHook: direct-scan: RIP chain broken - disp32 at 0x%p (offset %lld) not readable\n",
+                        reinterpret_cast<void*>(addr + offset), static_cast<long long>(offset));
                 return false;
             }
             addr = resolveRip(addr, offset);
             if (!addr) {
+                LOGSTRF("GtaCameraHook: direct-scan: RIP chain broken - read fault at offset %lld\n",
+                        static_cast<long long>(offset));
                 return false;
             }
         }
     } else if (config.ripOffsetSet && config.ripOffset >= 0) {
         if (!IsReadable(addr + config.ripOffset, sizeof(int32_t))) {
+            LOGSTRF("GtaCameraHook: direct-scan: RIP disp32 at 0x%p not readable\n",
+                    reinterpret_cast<void*>(addr + config.ripOffset));
             return false;
         }
         addr = resolveRip(addr, config.ripOffset);
         if (!addr) {
+            LOGSTR("GtaCameraHook: direct-scan: RIP resolve read fault\n");
             return false;
         }
     }
 
+    bool pointerChainUnresolved = false;
     if (!config.pointerOffsets.empty()) {
         uintptr_t current = addr;
         bool pointerResolved = true;
@@ -996,8 +1021,19 @@ bool GtaCameraHook::TryDirectMatrixScan(const CameraConfig& config, uintptr_t& o
 
         if (pointerResolved) {
             addr = current;
+        } else {
+            pointerChainUnresolved = true;
         }
     }
+    if (pointerChainUnresolved) {
+        // The slot is null/unreadable (camera object not allocated yet). The
+        // scan below then searches around the unresolved address and normally
+        // finds nothing - logged at INFO: a prime live-failure suspect.
+        LOGSTRF("GtaCameraHook: direct-scan: pointer chain unresolved (slot 0x%p null/unreadable) - falling back to area scan\n",
+                reinterpret_cast<void*>(addr));
+    }
+    LOGDBGF("GtaCameraHook: direct-scan: resolved base 0x%p, scanning for matrix\n",
+            reinterpret_cast<void*>(addr));
 
     // Now scan the resolved address area for a valid camera matrix
     // Try the matrixOffset first, then scan nearby
@@ -1042,6 +1078,8 @@ bool GtaCameraHook::TryDirectMatrixScan(const CameraConfig& config, uintptr_t& o
     }
 
     if (!bestCandidate) {
+        LOGSTRF("GtaCameraHook: direct-scan: no plausible writable matrix near 0x%p\n",
+                reinterpret_cast<void*>(addr));
         return false;
     }
 

@@ -136,6 +136,47 @@ bool BuildManifest::Initialize() {
     return true;
 }
 
+bool BuildManifest::InitializeForTest(const std::wstring& path, const std::string& sectionName) {
+    // Full state reset so repeated calls are idempotent and never leak state
+    // from a previous Initialize()/InitializeForTest().
+    init_attempted_ = true;
+    loaded_ = false;
+    build_supported_ = false;
+    manifest_path_.clear();
+    sections_.clear();
+    build_info_ = BuildInfo{};
+    metadata_sweep_interval_sec_ = kDefaultMetadataSweepIntervalSec;
+
+    if (!ParseIni(path)) {
+        return false;
+    }
+    manifest_path_ = path;
+
+    // Section names are stored lowercased; match case-insensitively.
+    const IniSection* section = FindSection(IniToLower(sectionName));
+    if (!section) {
+        return false;
+    }
+
+    loaded_ = true;
+    build_supported_ = true;
+    build_info_.section = section->name;
+    std::string verified;
+    build_info_.verified = GetKey(*section, "verified", verified) && IniParseBool(verified);
+
+    // Mirror DetectBuild's [detect] handling for the sweep interval.
+    if (const IniSection* detect = FindSection("detect")) {
+        std::string value;
+        if (GetKey(*detect, "metadatasweepintervalsec", value)) {
+            int parsed = static_cast<int>(IniParseInt(value, kDefaultMetadataSweepIntervalSec));
+            if (parsed < 1) parsed = 1;
+            if (parsed > 300) parsed = 300;
+            metadata_sweep_interval_sec_ = parsed;
+        }
+    }
+    return true;
+}
+
 std::wstring BuildManifest::ResolveManifestPath() const {
     // 1) GTAVR_SETTINGS_DIR\gtav_legacy.ini
     wchar_t envPath[MAX_PATH] = {};

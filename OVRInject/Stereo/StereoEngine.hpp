@@ -97,10 +97,14 @@ struct FrameServices {
     // Z3D path; returns false when depth is unavailable (caller then blits).
     bool (*prepareDepth)(ID3D11Device*, ID3D11DeviceContext*) = nullptr;
     // Blits (or, without the blit shader, copies via HMDRenderer) the mono
-    // backbuffer into one eye target. eyeSign/selects the alignment side;
-    // useUserAlignment=false forces scale 1 / offset 0 (mono fallback).
+    // backbuffer into one eye target. eyeSign selects the alignment side
+    // (-1 left / +1 right / 0 shared mono); useUserAlignment=false forces
+    // scale 1 / offset 0. aspectFit=true contain-fits the backbuffer into
+    // the eye target (mono fallback mapping: aspect preserved, centered,
+    // black bars - see Stereo/ImageFit.hpp); the AER/Z3D paths pass false
+    // and keep the historical full-fill.
     void (*produceEye)(ID3D11Device*, ID3D11DeviceContext*, ID3D11Texture2D*,
-                       VR::Eye, float eyeSign, bool useUserAlignment) = nullptr;
+                       VR::Eye, float eyeSign, bool useUserAlignment, bool aspectFit) = nullptr;
     // Produces the right eye from the same backbuffer: depth-displaced when
     // useReprojection is true and the shader is available, else a plain blit.
     void (*renderRightEye)(ID3D11Device*, ID3D11DeviceContext*, ID3D11Texture2D*,

@@ -9,9 +9,10 @@
  *   1. These atomic initializers (match docs/user/comfort.md defaults).
  *   2. gtavr_settings.ini [Comfort] at startup (D3DHooks_VRManager loads
  *      vehicleHorizonLock / smoothTurnSpeed directly so they apply on BOTH
- *      runtimes; the OpenXR settings-apply path cannot be extended from here).
+ *      runtimes).
  *   3. The overlay UI (XROverlayUI) via the settings-changed callback
- *      (live-apply on the OpenVR path; OpenXR applies them next launch).
+ *      (live-applied on BOTH runtimes - the OpenXR apply path stores them in
+ *      XRHMDSupport::ApplyOverlaySettings, parity with OpenVR).
  *
  * snapTurning / snapTurnAngle / vignetteEnabled / vignetteIntensity remain in
  * VR::ComfortSettings (SharedSettings.hpp); their effective defaults come from

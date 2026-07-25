@@ -108,14 +108,18 @@ struct CameraSettings {
     std::atomic<float> worldScale{1.0f};
     std::atomic<float> playerHeight{1.7f};
     std::atomic<float> cameraOffsetX{0.0f};
-    std::atomic<float> cameraOffsetY{0.34f};
+    std::atomic<float> cameraOffsetY{0.0f};
     std::atomic<float> cameraOffsetZ{0.0f};
 };
 
 struct ComfortSettings {
-    std::atomic<bool> snapTurning{false};
+    // Defaults ON per docs/user/comfort.md (comfort is a safety requirement).
+    // These must match XR::VRSettings (XROverlayUI.hpp): if overlay UI init
+    // fails, no settings-apply ever runs and these atomic initializers are the
+    // only defaults the pipeline sees.
+    std::atomic<bool> snapTurning{true};
     std::atomic<float> snapTurnAngle{45.0f};
-    std::atomic<bool> vignetteEnabled{false};
+    std::atomic<bool> vignetteEnabled{true};
     std::atomic<float> vignetteIntensity{0.5f};
 };
 

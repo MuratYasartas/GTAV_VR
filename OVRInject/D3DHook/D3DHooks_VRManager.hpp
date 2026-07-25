@@ -40,6 +40,7 @@
 #include "../Game/OnlineGuard.hpp"
 #include "../Stereo/StereoEngine.hpp"
 #include "../Stereo/ComfortRuntime.hpp"
+#include "../Stereo/ImageFit.hpp"
 #include "../Perf/PerfStats.hpp"
 #include "HudRedirect.hpp"
 #include <atomic>
@@ -242,10 +243,9 @@ namespace VRMgr {
         comfort.vignetteEnabled.store(settings.vignetteEnabled);
         comfort.vignetteIntensity.store(settings.vignetteIntensity);
 
-        // Phase 5/6 comfort additions (live-applied here; the OpenXR
-        // settings-apply path cannot be extended from this layer, so there
-        // they load from gtavr_settings.ini at startup instead - see
-        // LoadComfortRuntimeFromIni).
+        // Phase 5/6 comfort additions (live-applied here on the OpenVR path;
+        // the OpenXR apply path stores the same values in
+        // XRHMDSupport::ApplyOverlaySettings - parity).
         auto& comfortRuntime = Stereo::GetComfortRuntime();
         comfortRuntime.vehicleHorizonLock.store(settings.vehicleHorizonLock);
         comfortRuntime.smoothTurnSpeedDeg.store(settings.smoothTurnSpeed);
@@ -896,9 +896,14 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
 
         auto& repro = VR::GetReprojectionSettings();
         outScale = (std::max)(0.05f, repro.imageScale.load());
-        constexpr float kOffsetScale = 0.01f;
-        outOffsetX = repro.screenOffsetX.load() * kOffsetScale * eyeSign;
-        outOffsetY = repro.screenOffsetY.load() * kOffsetScale * eyeSign;
+        // Alignment contract (Stereo/ImageFit.hpp): X is a per-eye
+        // convergence shift (opposite directions, signed by eyeSign); Y is
+        // common-mode - identical in both eyes. Signing Y per eye (the old
+        // behavior) produced vertical disparity: unfusable, "eyes not
+        // aligned".
+        Stereo::ComputeUserImageOffsets(repro.screenOffsetX.load(),
+                                        repro.screenOffsetY.load(),
+                                        eyeSign, outOffsetX, outOffsetY);
         outOffsetX = ClampImageOffset(outOffsetX, outScale, "X");
         outOffsetY = ClampImageOffset(outOffsetY, outScale, "Y");
     }
@@ -1048,7 +1053,8 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                            ID3D11Texture2D* source,
                            ID3D11RenderTargetView* target,
                            float eyeSign,
-                           bool useUserAlignment = true) {
+                           bool useUserAlignment = true,
+                           bool aspectFit = false) {
         if (!device || !context || !source || !target || !blit_pixel_shader_) {
             return;
         }
@@ -1115,6 +1121,35 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                 viewport.Width = static_cast<float>(dstDesc.Width);
                 viewport.Height = static_cast<float>(dstDesc.Height);
                 viewport.MaxDepth = 1.0f;
+                if (aspectFit) {
+                    // Mono-fallback mapping (camera unresolved): contain-fit
+                    // the backbuffer into the eye target, aspect preserved
+                    // and centered, bars cleared to opaque black (math and
+                    // rationale in Stereo/ImageFit.hpp). The blit shader is
+                    // unchanged: UV 0..1 spans the fitted viewport, so
+                    // imageScale zooms the fitted image around its center
+                    // (the user "virtual distance" knob) and the offsets
+                    // shift it. Only the mono path passes aspectFit=true -
+                    // the AER/Z3D paths keep the historical full-fill.
+                    const Stereo::ContainFitRect fit =
+                        Stereo::ComputeContainFit(srcDesc.Width, srcDesc.Height,
+                                                  dstDesc.Width, dstDesc.Height);
+                    if (fit.letterboxed) {
+                        const float kOpaqueBlack[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+                        context->ClearRenderTargetView(target, kOpaqueBlack);
+                        static bool logged_fit = false;
+                        if (!logged_fit) {
+                            LOGSTRF("D3DHooks_VRManager: Mono blit aspect-fit %ux%u -> %ux%u: image %ux%u at (%u,%u), bars black\n",
+                                    srcDesc.Width, srcDesc.Height, dstDesc.Width, dstDesc.Height,
+                                    fit.width, fit.height, fit.x, fit.y);
+                            logged_fit = true;
+                        }
+                    }
+                    viewport.TopLeftX = static_cast<float>(fit.x);
+                    viewport.TopLeftY = static_cast<float>(fit.y);
+                    viewport.Width = static_cast<float>(fit.width);
+                    viewport.Height = static_cast<float>(fit.height);
+                }
                 context->RSSetViewports(1, &viewport);
                 D3D11_RECT rect = {0, 0, static_cast<LONG>(dstDesc.Width), static_cast<LONG>(dstDesc.Height)};
                 context->RSSetScissorRects(1, &rect);
@@ -1304,15 +1339,17 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
     }
 
     // Backbuffer -> one eye target (blit shader when available, else the
-    // HMDRenderer copy path).
+    // HMDRenderer copy path). aspectFit=true contain-fits the backbuffer in
+    // the eye target (mono fallback only; see Stereo/ImageFit.hpp).
     static void ProduceEyeFromBackbuffer(ID3D11Device* device,
                                          ID3D11DeviceContext* context,
                                          ID3D11Texture2D* pBuffer,
                                          VR::Eye eye,
                                          float eyeSign,
-                                         bool useUserAlignment) {
+                                         bool useUserAlignment,
+                                         bool aspectFit) {
         if (blit_pixel_shader_) {
-            RenderBlit(device, context, pBuffer, hmdRenderer->GetEyeRenderTarget(eye), eyeSign, useUserAlignment);
+            RenderBlit(device, context, pBuffer, hmdRenderer->GetEyeRenderTarget(eye), eyeSign, useUserAlignment, aspectFit);
         } else {
             hmdRenderer->Render(eye, pBuffer);
         }

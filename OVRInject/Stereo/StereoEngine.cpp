@@ -562,10 +562,17 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
 
     if (wantAlternate) {
         float eyeSign = (renderEye == VR::Eye::Left) ? -1.0f : 1.0f;
-        services.produceEye(backend->GetDevice(), context, pBuffer, renderEye, eyeSign, true);
+        services.produceEye(backend->GetDevice(), context, pBuffer, renderEye, eyeSign, true, false);
     } else {
+        // Mono fallback (camera unresolved): ONE aspect-fitted blit into the
+        // left eye texture, which is then submitted for BOTH eyes - so both
+        // eyes show the identical, centered, aspect-correct image (the old
+        // full-stretch filled the near-square eye texture with the
+        // ultrawide backbuffer, ~2.4x vertical over-stretch). The plain
+        // non-AER path (camera ready but loading/menu) keeps full-fill.
         services.produceEye(backend->GetDevice(), context, pBuffer,
-                            VR::Eye::Left, 0.0f, monoFallbackCopyBothEyes);
+                            VR::Eye::Left, 0.0f, monoFallbackCopyBothEyes,
+                            monoFallbackCopyBothEyes);
         if (!monoFallbackCopyBothEyes && services.renderRightEye) {
             services.renderRightEye(backend->GetDevice(), context, pBuffer,
                                     wantReprojection && depthReady);

@@ -9,6 +9,11 @@
 
 #include <Windows.h>
 
+// Same module-handle idiom as VRManager.cpp: &__ImageBase is the HMODULE of
+// the binary this code is linked into (the injected OVRInject.dll), so config
+// can be found beside the DLL rather than only beside the host exe.
+EXTERN_C IMAGE_DOS_HEADER __ImageBase;
+
 namespace {
 
 constexpr char kLogFileName[] = "gtavrInjectLog.txt";
@@ -31,36 +36,36 @@ const char* LevelTag(LogLevel level) {
 
 // Verbose (debug-channel) flag, evaluated once. On when env GTAVR_VERBOSE is
 // set to anything but "0"/empty, or when gtavr_settings.ini contains
-// [Debug] verbose=1 (searched in GTAVR_SETTINGS_DIR, then beside the exe).
+// [Debug] verbose=1. Ini search order: GTAVR_SETTINGS_DIR (when set), then
+// beside THIS module (the injected DLL - the control panel writes the ini
+// there before injecting into an already-running game, whose environment we
+// cannot change), then beside the host exe. The first file that exists is
+// authoritative: an existing ini without [Debug] verbose means verbose OFF,
+// lower-priority copies are not consulted.
 // NOTE: the Windows INI API silently fails on LF-only files, so the INI is
 // scanned manually.
-bool ComputeVerbose() {
-	char envVal[16] = {};
-	DWORD len = GetEnvironmentVariableA("GTAVR_VERBOSE", envVal, sizeof(envVal));
-	if (len > 0 && len < sizeof(envVal) && !(envVal[0] == '0' && envVal[1] == '\0')) {
-		return true;
-	}
 
-	char iniPath[MAX_PATH] = {};
-	len = GetEnvironmentVariableA("GTAVR_SETTINGS_DIR", iniPath, MAX_PATH);
-	if (len > 0 && len < MAX_PATH) {
-		strncat_s(iniPath, sizeof(iniPath), "\\gtavr_settings.ini", _TRUNCATE);
-	} else {
-		char modulePath[MAX_PATH] = {};
-		DWORD mlen = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
-		if (mlen > 0 && mlen < MAX_PATH) {
-			char* lastSlash = strrchr(modulePath, '\\');
-			if (lastSlash) {
-				*(lastSlash + 1) = '\0';
-				snprintf(iniPath, sizeof(iniPath), "%sgtavr_settings.ini", modulePath);
-			}
-		}
-	}
-	if (iniPath[0] == '\0') return false;
+// Builds "<dir of module>\gtavr_settings.ini" into out. `module` may be null
+// (host exe) or &__ImageBase (this binary). Returns false when the path
+// could not be resolved.
+bool ModuleDirIniPath(HMODULE module, char* out, size_t outSize) {
+	char modulePath[MAX_PATH] = {};
+	DWORD mlen = GetModuleFileNameA(module, modulePath, MAX_PATH);
+	if (mlen == 0 || mlen >= MAX_PATH) return false;
+	char* lastSlash = strrchr(modulePath, '\\');
+	if (!lastSlash) return false;
+	*(lastSlash + 1) = '\0';
+	snprintf(out, outSize, "%sgtavr_settings.ini", modulePath);
+	return true;
+}
 
+// Parses [Debug] verbose= from one ini. Returns true when the file could be
+// opened (making it authoritative); sets `verbose` to the parsed flag.
+bool ParseVerboseIni(const char* iniPath, bool* verbose) {
+	*verbose = false;
 	FILE* fp = nullptr;
 	if (fopen_s(&fp, iniPath, "rb") != 0 || !fp) return false;
-	bool inDebug = false, verbose = false;
+	bool inDebug = false;
 	char line[512];
 	while (fgets(line, sizeof(line), fp)) {
 		char* p = line;
@@ -71,12 +76,46 @@ bool ComputeVerbose() {
 			char* eq = strchr(p, '=');
 			if (eq) {
 				while (*++eq == ' ') {}
-				verbose = (*eq == '1' || *eq == 't' || *eq == 'T' || *eq == 'y' || *eq == 'Y');
+				*verbose = (*eq == '1' || *eq == 't' || *eq == 'T' || *eq == 'y' || *eq == 'Y');
 			}
 		}
 	}
 	fclose(fp);
-	return verbose;
+	return true;
+}
+
+bool ComputeVerbose() {
+	char envVal[16] = {};
+	DWORD len = GetEnvironmentVariableA("GTAVR_VERBOSE", envVal, sizeof(envVal));
+	if (len > 0 && len < sizeof(envVal) && !(envVal[0] == '0' && envVal[1] == '\0')) {
+		return true;
+	}
+
+	char candidates[3][MAX_PATH] = {};
+	int count = 0;
+
+	len = GetEnvironmentVariableA("GTAVR_SETTINGS_DIR", candidates[count], MAX_PATH);
+	if (len > 0 && len < MAX_PATH) {
+		strncat_s(candidates[count], sizeof(candidates[0]), "\\gtavr_settings.ini", _TRUNCATE);
+		++count;
+	}
+	// Beside the injected DLL: the only location the control panel can write
+	// that an already-running game will actually read back.
+	if (ModuleDirIniPath(reinterpret_cast<HMODULE>(&__ImageBase), candidates[count], sizeof(candidates[0]))) {
+		++count;
+	}
+	// Legacy location beside the host exe.
+	if (ModuleDirIniPath(nullptr, candidates[count], sizeof(candidates[0]))) {
+		++count;
+	}
+
+	for (int i = 0; i < count; ++i) {
+		bool verbose = false;
+		if (ParseVerboseIni(candidates[i], &verbose)) {
+			return verbose;
+		}
+	}
+	return false;
 }
 
 bool IsVerbose() {
