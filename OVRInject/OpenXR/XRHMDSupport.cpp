@@ -381,14 +381,17 @@ bool XRHMDSupport::BeginFrame() {
     // Delete/Insert), so the menu can always be opened with dead or
     // unmapped controllers.
     PollOverlayKeyboardToggle();
-    // Visibility gate: xrWaitFrame blocks indefinitely while the session is
-    // not visible/focused (e.g. the runtime's home holds the display, or the
-    // runtime never composites this session). Never freeze the game for that:
-    // degrade to pass-through frames until the session says it can render.
-    if (!session_->ShouldRender()) {
-        static int invisibleFrames = 0;
-        if ((invisibleFrames++ % 600) == 0) {
-            LOGDBGF("XRHMDSupport: session not renderable (state=%d) - pass-through frame\n",
+    // Frame-loop gate: xrWaitFrame is only legal after xrBeginSession, and
+    // from then on it must run EVERY frame - the runtime's session state
+    // machine (READY -> SYNCHRONIZED -> VISIBLE -> FOCUSED) advances FROM
+    // frame-loop activity. Gating on visibility here starves the runtime and
+    // wedges the session at READY forever (observed live). When the session
+    // is not renderable, frameState.shouldRender=false drives the existing
+    // EndFrameEmpty path below instead - the loop keeps pacing.
+    if (!session_->IsBegun()) {
+        static int notBegunFrames = 0;
+        if ((notBegunFrames++ % 600) == 0) {
+            LOGDBGF("XRHMDSupport: session not begun yet (state=%d) - pass-through frame\n",
                     static_cast<int>(session_->GetCurrentState()));
         }
         return false;

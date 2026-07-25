@@ -93,6 +93,13 @@ public:
      */
     bool IsCreated() const { return session_ != XR_NULL_HANDLE; }
 
+    /**
+     * Check if xrBeginSession has succeeded. xrWaitFrame/xrBeginFrame are only
+     * legal after this point - and from then on they must run EVERY frame so
+     * the runtime's session state machine can advance past READY.
+     */
+    bool IsBegun() const { return session_running_; }
+
     //-------------------------------------------------------------------------
     // Event Processing
     //-------------------------------------------------------------------------

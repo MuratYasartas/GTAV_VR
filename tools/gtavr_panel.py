@@ -173,6 +173,37 @@ class Panel(tk.Tk):
         env["GTAVR_BACKEND"] = self.backend.get()
         return env
 
+    def write_backend_ini(self):
+        """Persist the chosen backend where the INJECTED DLL actually reads it.
+
+        Env vars only reach a process we spawn - when injecting into an
+        already-running game, GTAVR_BACKEND never arrives. The DLL reads
+        gtavr_settings.ini [Runtime] backend= from its own directory.
+        """
+        ini = os.path.join(BIN, "gtavr_settings.ini")
+        text = ""
+        if os.path.exists(ini):
+            try:
+                with open(ini, "r", errors="ignore") as f:
+                    text = f.read()
+            except OSError:
+                text = ""
+        out, skip = [], False
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("["):
+                skip = (s.lower() == "[runtime]")
+            if not skip:
+                out.append(line)
+        while out and not out[-1].strip():
+            out.pop()
+        out += ["", "[Runtime]", "backend=" + self.backend.get(), ""]
+        try:
+            with open(ini, "w", newline="\n") as f:
+                f.write("\n".join(out))
+        except OSError as e:
+            self.say("err", f"cannot write backend ini: {e}\n")
+
     # ---------- actions ----------
     def preflight(self):
         def work():
@@ -202,6 +233,7 @@ class Panel(tk.Tk):
             messagebox.showinfo("GTAVR", "Already injected into this game instance.\nRestart the game to inject again.")
             return
         env = self.base_env()
+        self.write_backend_ini()
         self.say("verdict", f"--- injecting backend={env['GTAVR_BACKEND']} verbose={self.verbose.get()} into pid {pid} ---\n")
 
         def work():

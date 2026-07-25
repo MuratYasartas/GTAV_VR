@@ -53,6 +53,19 @@ one release for the record) · ❓ UNVERIFIED
 
 ## GTA V Legacy (primary)
 
+- ⚪ **OpenXR session stuck at READY, nothing displayed (observed live) —
+  FIXED** — root cause: the visibility gate skipped `xrWaitFrame` until the
+  session became visible, but the runtime's session state machine
+  (READY→SYNCHRONIZED→VISIBLE) advances **from frame-loop activity** →
+  chicken-and-egg, session wedged at READY (the Pimax "void" the user saw).
+  The gate is now `IsBegun()`: after `xrBeginSession` the frame loop runs
+  every frame, with `shouldRender=false` driving the engine's existing
+  EndFrameEmpty path until the runtime grants visibility. Also fixed the
+  heartbeat flood (time-based, 5 s). In-headset confirmation pending. 2026-07-26
+- ⚪ **Backend/verbose settings not reaching an already-running game** —
+  env vars (`GTAVR_BACKEND`, `GTAVR_VERBOSE`) only propagate to processes we
+  spawn. Backend is now also read from `gtavr_settings.ini [Runtime] backend=`
+  (the panel writes it before injecting). 2026-07-26
 - ❓ **OpenXR session can sit pre-READY forever** (observed live with the
   Pimax runtime: session created, overlay initialized, zero
   "OpenXR session state" lines → `xrBeginSession` never runs → controllers

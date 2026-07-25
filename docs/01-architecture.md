@@ -133,9 +133,11 @@ Modes (ADR-0002): **AER default**, dual-pass experimental, Z3D fallback.
 ```
 Per Present (game render thread):
   if OnlineGuard.IsDisabled() → pass through, no camera writes, no XR submit
-  backend->BeginFrame()                       // visibility-gated: skipped entirely when
-                                              // the session is not VISIBLE/FOCUSED
-                                              // (never blocks the render thread)
+  backend->BeginFrame()                       // once the session is begun this runs
+                                              // EVERY frame (the runtime's state
+                                              // machine advances from frame-loop
+                                              // activity); shouldRender=false when
+                                              // not visible → EndFrameEmpty path
   plan = EyeDelivery.Plan(frameIndex)         // AER: which eye is fresh, per-layer
                                               // texture mapping (layer i <- eye tex i)
   blit backbuffer → fresh eye texture         // stale eye keeps its OWN previous frame

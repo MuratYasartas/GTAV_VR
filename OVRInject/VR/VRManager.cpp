@@ -227,6 +227,8 @@ bool VRManager::TryInitializeOpenXR(ID3D11Device* device) {
 // Configuration
 //-----------------------------------------------------------------------------
 
+EXTERN_C IMAGE_DOS_HEADER __ImageBase;
+
 Runtime VRManager::GetPreferredRuntimeFromConfig() const {
     // Check environment variable
     const char* envBackend = std::getenv("GTAVR_BACKEND");
@@ -241,8 +243,62 @@ Runtime VRManager::GetPreferredRuntimeFromConfig() const {
         }
     }
 
-    // Could also read from INI file here
-    // For now, return Auto to use default detection
+    // INI fallback: when the mod is injected into an ALREADY-RUNNING game,
+    // the game's environment never contains GTAVR_BACKEND, so the backend
+    // must also be selectable via gtavr_settings.ini [Runtime] backend=.
+    // The control panel writes this key before injecting. Manual parse
+    // (the Win32 INI API silently fails on LF-only files).
+    char iniPath[MAX_PATH] = {};
+    DWORD len = GetEnvironmentVariableA("GTAVR_SETTINGS_DIR", iniPath, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        strncat_s(iniPath, sizeof(iniPath), "\\gtavr_settings.ini", _TRUNCATE);
+    } else {
+        char modulePath[MAX_PATH] = {};
+        DWORD mlen = GetModuleFileNameA(reinterpret_cast<HMODULE>(&__ImageBase), modulePath, MAX_PATH);
+        if (mlen > 0 && mlen < MAX_PATH) {
+            char* lastSlash = strrchr(modulePath, '\\');
+            if (lastSlash) {
+                *(lastSlash + 1) = '\0';
+                snprintf(iniPath, sizeof(iniPath), "%sgtavr_settings.ini", modulePath);
+            }
+        }
+    }
+    if (iniPath[0] != '\0') {
+        FILE* fp = nullptr;
+        if (fopen_s(&fp, iniPath, "rb") == 0 && fp) {
+            char line[256];
+            bool inRuntime = false;
+            char backend[32] = {};
+            while (fgets(line, sizeof(line), fp)) {
+                char* p = line;
+                while (*p == ' ' || *p == '\t') ++p;
+                if (_strnicmp(p, "[Runtime]", 9) == 0) { inRuntime = true; continue; }
+                if (p[0] == '[') { inRuntime = false; continue; }
+                if (inRuntime && _strnicmp(p, "backend", 7) == 0) {
+                    char* eq = strchr(p, '=');
+                    if (eq) {
+                        while (*++eq == ' ' || *eq == '\t') {}
+                        size_t i = 0;
+                        while (i < sizeof(backend) - 1 &&
+                               ((*eq >= 'a' && *eq <= 'z') || (*eq >= 'A' && *eq <= 'Z') || *eq == '_')) {
+                            backend[i++] = *eq++;
+                        }
+                        backend[i] = '\0';
+                    }
+                }
+            }
+            fclose(fp);
+            if (_stricmp(backend, "openxr") == 0) {
+                LOGSTR("VRManager: INI [Runtime] backend=openxr\n");
+                return Runtime::OpenXR;
+            }
+            if (_stricmp(backend, "openvr") == 0) {
+                LOGSTR("VRManager: INI [Runtime] backend=openvr\n");
+                return Runtime::OpenVR;
+            }
+        }
+    }
+
     return Runtime::Auto;
 }
 
