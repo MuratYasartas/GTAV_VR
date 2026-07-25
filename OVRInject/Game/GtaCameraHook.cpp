@@ -443,23 +443,11 @@ bool GtaCameraHook::RunResolutionPass(bool allowFullSweep, uint64_t deadlineTick
         }
     }
 
-    // 2) Active camera via the camera director (GtaCameraFov).
-    // FULL PASSES ONLY. This step's pointer/metadata scans (up to millions of
-    // VirtualQuery calls in the worst case) have no time budget and wedged a
-    // background retry for 10+ minutes live (2026-07-26), starving the cheap
-    // manifest retry that would have succeeded. Cheap passes must stay cheap:
-    // config + manifest + direct-scan only.
-    addr = 0;
-    base = 0;
-    if (allowFullSweep && !ShouldAbortScan(deadlineTick) && TryResolveFromActiveCamera(addr, base)) {
-        if (ValidateAndPublishCandidate(addr, base, "active-camera")) {
-            return true;
-        }
-    } else if (!allowFullSweep) {
-        LOGDBGF("GtaCameraHook: cheap pass - skipping active-camera step\n");
-    }
-
-    // 3) Build-manifest patterns (version-pinned, manifests/gtav_legacy.ini).
+    // 2) Build-manifest patterns (version-pinned, manifests/gtav_legacy.ini).
+    // Tried BEFORE the active-camera step: the manifest direct scan is
+    // milliseconds-cheap and proven to resolve on supported builds, while the
+    // active-camera pointer/metadata scans have no time budget and have
+    // wedged for minutes live (2026-07-26).
     BuildManifest& manifest = BuildManifest::Get();
     manifest.Initialize();
     std::vector<CameraPatternEntry> entries;
@@ -505,6 +493,21 @@ bool GtaCameraHook::RunResolutionPass(bool allowFullSweep, uint64_t deadlineTick
         }
     } else if (passIndex == 1) {
         LOGSTR("GtaCameraHook: no manifest camera patterns for this build (unsupported build or empty section)\n");
+    }
+
+    // 3) Active camera via the camera director (GtaCameraFov).
+    // FULL PASSES ONLY, last resort after config+manifest: this step's
+    // pointer/metadata scans (up to millions of VirtualQuery calls in the
+    // worst case) have no time budget and wedged for minutes live
+    // (2026-07-26). Cheap passes must stay cheap: config + manifest only.
+    addr = 0;
+    base = 0;
+    if (allowFullSweep && !ShouldAbortScan(deadlineTick) && TryResolveFromActiveCamera(addr, base)) {
+        if (ValidateAndPublishCandidate(addr, base, "active-camera")) {
+            return true;
+        }
+    } else if (!allowFullSweep) {
+        LOGDBGF("GtaCameraHook: cheap pass - skipping active-camera step\n");
     }
 
     // 4) Whole-process metadata sweep - expensive (~7.7s+ per sweep on a live

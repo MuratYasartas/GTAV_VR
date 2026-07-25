@@ -509,8 +509,26 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         loggedCameraFallback_ = true;
     }
 
-    float renderScale = reproSettings.renderScale.load();
-    hmdRenderer->Resize(renderScale);
+    // Render scale changes recreate every eye texture; dragging the overlay
+    // slider would otherwise churn dozens of texture allocations per second
+    // (observed live: 15 re-inits in 7 s). Debounce: apply at most once per
+    // second, always converging to the latest requested value.
+    {
+        float requestedScale = reproSettings.renderScale.load();
+        static float lastAppliedScale = -1.0f;
+        static float pendingScale = -1.0f;
+        static uint64_t pendingSinceMs = 0;
+        uint64_t nowMs = GetTickCount64();
+        if (requestedScale != pendingScale) {
+            pendingScale = requestedScale;
+            pendingSinceMs = nowMs;
+        }
+        if (pendingScale >= 0.0f && pendingScale != lastAppliedScale &&
+            nowMs - pendingSinceMs >= 1000) {
+            hmdRenderer->Resize(pendingScale);
+            lastAppliedScale = pendingScale;
+        }
+    }
 
     if (services.maybeResizeSwapchain) {
         services.maybeResizeSwapchain(pSwapChain);
