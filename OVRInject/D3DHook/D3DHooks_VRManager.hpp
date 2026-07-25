@@ -33,13 +33,17 @@
 #include "../Game/GtaCameraHook.hpp"
 #include "../Game/GtaCameraFov.hpp"
 #include "../Game/GtaGameState.hpp"
+#include "../Game/BuildManifest.hpp"
 #include "../Overlay/OpenVROverlaySurface.hpp"
 #include "../Overlay/VirtualScreen.hpp"
 #include "../OpenXR/XROverlayUI.hpp"
 #include "../Game/OnlineGuard.hpp"
 #include "../Stereo/StereoEngine.hpp"
+#include "../Stereo/ComfortRuntime.hpp"
 #include "../Perf/PerfStats.hpp"
+#include "HudRedirect.hpp"
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 
@@ -223,6 +227,14 @@ namespace VRMgr {
         comfort.snapTurnAngle.store(settings.snapTurnAngle);
         comfort.vignetteEnabled.store(settings.vignetteEnabled);
         comfort.vignetteIntensity.store(settings.vignetteIntensity);
+
+        // Phase 5/6 comfort additions (live-applied here; the OpenXR
+        // settings-apply path cannot be extended from this layer, so there
+        // they load from gtavr_settings.ini at startup instead - see
+        // LoadComfortRuntimeFromIni).
+        auto& comfortRuntime = Stereo::GetComfortRuntime();
+        comfortRuntime.vehicleHorizonLock.store(settings.vehicleHorizonLock);
+        comfortRuntime.smoothTurnSpeedDeg.store(settings.smoothTurnSpeed);
 
         auto& stereo = VR::GetStereoSettings();
         stereo.mode.store(settings.stereoMode);
@@ -625,6 +637,9 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         blit_source_height_ = 0;
         blit_source_format_ = DXGI_FORMAT_UNKNOWN;
         ReleaseDepthResources();
+        // Phase 6 HUD: the HUD target is backbuffer-sized; drop it (and the
+        // cached backbuffer pointer) so the next Present re-caches cleanly.
+        Hud::ReleaseResources();
         base_swap_width = 0;
         base_swap_height = 0;
     }
@@ -750,15 +765,77 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         return depth_srv_ != nullptr;
     }
 
-    static void UpdateVignetteParams(ID3D11DeviceContext* context) {
+    // Locomotion vignette (comfort default ON per docs/user/comfort.md):
+    // fades in with movement, off while stationary. Game-speed input state is
+    // not available without Game/ edits, so the locomotion proxy is
+    // max(smoothed head-translation speed, left-stick magnitude), plus a
+    // constant floor while in a vehicle (the comfort.md vehicle profile calls
+    // for a stronger vignette while driving).
+    static void UpdateVignetteParams(ID3D11DeviceContext* context, VR::IVRBackend* backend) {
         if (!vignette_constant_buffer_ || !context) {
             return;
         }
 
+        static float activity = 0.0f;
+        static bool have_last_pos = false;
+        static float last_pos[3] = {0.0f, 0.0f, 0.0f};
+        static uint64_t last_tick = 0;
+
+        uint64_t now = GetTickCount64();
+        float dt = (last_tick != 0) ? static_cast<float>(now - last_tick) / 1000.0f : 0.0f;
+        last_tick = now;
+        if (dt > 0.25f) {
+            dt = 0.0f;  // long stall: do not integrate a bogus delta
+        }
+
+        float target = 0.0f;
+        if (backend && dt > 0.0f) {
+            DirectX::XMMATRIX headPose = backend->GetHeadPoseMatrix();
+            float pos[3] = {headPose.r[3].m128_f32[0],
+                            headPose.r[3].m128_f32[1],
+                            headPose.r[3].m128_f32[2]};
+            if (have_last_pos) {
+                float dx = pos[0] - last_pos[0];
+                float dy = pos[1] - last_pos[1];
+                float dz = pos[2] - last_pos[2];
+                float speed = std::sqrt(dx * dx + dy * dy + dz * dz) / dt;  // m/s
+                // Full activity at ~0.4 m/s of head translation (room-scale
+                // steps, walk-in-place bob); pure head rotation contributes
+                // nothing.
+                target = (std::max)(target, (std::min)(speed / 0.4f, 1.0f));
+            }
+            last_pos[0] = pos[0];
+            last_pos[1] = pos[1];
+            last_pos[2] = pos[2];
+            have_last_pos = true;
+
+            const auto& leftState = backend->GetControllerState(VR::Hand::Left);
+            float stickMag = std::sqrt(leftState.buttons.thumbstickX * leftState.buttons.thumbstickX +
+                                       leftState.buttons.thumbstickY * leftState.buttons.thumbstickY);
+            if (stickMag < 0.15f) {
+                stickMag = 0.0f;
+            }
+            target = (std::max)(target, (std::min)(stickMag, 1.0f));
+        } else if (!backend) {
+            have_last_pos = false;
+        }
+
+        if (gameState && gameState->IsInVehicle()) {
+            target = (std::max)(target, 0.5f);  // vehicle floor: stronger vignette while driving
+        }
+
+        if (dt > 0.0f) {
+            // Fast attack (~100 ms), slower release (~600 ms).
+            float tau = (target > activity) ? 0.10f : 0.60f;
+            activity += (target - activity) * (1.0f - std::exp(-dt / tau));
+        }
+        Stereo::GetComfortRuntime().vignetteActivity.store(activity);
+
         auto& comfort = VR::GetComfortSettings();
+        bool enabled = comfort.vignetteEnabled.load() && activity > 0.02f;
         VignetteParams params = {};
-        params.u_intensity = comfort.vignetteIntensity.load();
-        params.u_enabled = comfort.vignetteEnabled.load() ? 1.0f : 0.0f;
+        params.u_intensity = enabled ? comfort.vignetteIntensity.load() * activity : 0.0f;
+        params.u_enabled = enabled ? 1.0f : 0.0f;
         context->UpdateSubresource(vignette_constant_buffer_, 0, nullptr, &params, 0, 0);
     }
 
@@ -1041,39 +1118,95 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         }
     }
 
-    static void ApplySnapTurning(const VR::ControllerState& rightState) {
+    // Quick recenter bind: right thumbstick click. (Both-grips is the OpenXR
+    // overlay toggle and the menu button toggles the overlay on both
+    // runtimes, so stick-click is the free bind everywhere.) Mirrors the
+    // overlay recenter path: runtime recenter + clear the turn offset + ask
+    // the camera hook to re-reference the head pose.
+    static void DoQuickRecenter(VR::IVRBackend* backend) {
+        if (!backend) {
+            return;
+        }
+        backend->Recenter();
+        VR::GetViewSettings().snapYawOffsetDeg.store(0.0f);
+        VR::GetStereoSettings().recenterRequested.store(true);
+        VR::GetHeadLookSettings().recenterRequested.store(true);
+        LOGSTR("D3DHooks_VRManager: Quick recenter (right stick click)\n");
+    }
+
+    // Comfort turning + quick recenter. Snap turn (the comfort default) is
+    // edge-triggered at snapTurnAngle; with snapTurning=0 the right stick
+    // smooth-turns at smoothTurnSpeed deg/s. Both write snapYawOffsetDeg,
+    // which the camera hook applies to the head pose every frame
+    // (GtaCameraHook.cpp), so the turn rotates the camera reference, not the
+    // rendered image.
+    static void ApplyTurningAndComfortInput(VR::IVRBackend* backend) {
         static bool snap_ready = true;
+        static bool recenter_latched = false;
+        static uint64_t last_tick = 0;
+
+        if (!backend) {
+            return;
+        }
+
+        const auto& rightState = backend->GetControllerState(VR::Hand::Right);
+
+        if (rightState.buttons.thumbstickJustPressed) {
+            if (!recenter_latched) {
+                DoQuickRecenter(backend);
+                recenter_latched = true;
+            }
+        } else {
+            recenter_latched = false;
+        }
 
         auto& comfort = VR::GetComfortSettings();
-        if (!comfort.snapTurning.load()) {
-            snap_ready = true;
-            return;
-        }
-
+        auto& view = VR::GetViewSettings();
         float axis = rightState.buttons.thumbstickX;
-        const float threshold = 0.7f;
-        const float release = 0.3f;
 
-        if (!snap_ready) {
-            if (std::fabs(axis) < release) {
-                snap_ready = true;
+        uint64_t now = GetTickCount64();
+        float dt = (last_tick != 0) ? static_cast<float>(now - last_tick) / 1000.0f : 0.0f;
+        last_tick = now;
+        if (dt > 0.25f) {
+            dt = 0.0f;
+        }
+
+        if (comfort.snapTurning.load()) {
+            const float threshold = 0.7f;
+            const float release = 0.3f;
+
+            if (!snap_ready) {
+                if (std::fabs(axis) < release) {
+                    snap_ready = true;
+                }
+                return;
+            }
+
+            if (axis > threshold || axis < -threshold) {
+                float angle = comfort.snapTurnAngle.load();
+                if (axis < 0.0f) {
+                    angle = -angle;
+                }
+                float yaw = view.snapYawOffsetDeg.load() + angle;
+                if (std::fabs(yaw) > 360.0f) {
+                    yaw = std::fmod(yaw, 360.0f);
+                }
+                view.snapYawOffsetDeg.store(yaw);
+                snap_ready = false;
             }
             return;
         }
 
-        if (axis > threshold || axis < -threshold) {
-            float angle = comfort.snapTurnAngle.load();
-            if (axis < 0.0f) {
-                angle = -angle;
-            }
-            auto& view = VR::GetViewSettings();
-            float yaw = view.snapYawOffsetDeg.load();
-            yaw += angle;
+        // Smooth turn: snapTurning=0 alternative, configurable speed.
+        snap_ready = true;
+        const float deadzone = 0.2f;
+        if (dt > 0.0f && std::fabs(axis) > deadzone) {
+            float speed = Stereo::GetComfortRuntime().smoothTurnSpeedDeg.load();
+            float yaw = view.snapYawOffsetDeg.load() + axis * speed * dt;
             if (std::fabs(yaw) > 360.0f) {
                 yaw = std::fmod(yaw, 360.0f);
             }
             view.snapYawOffsetDeg.store(yaw);
-            snap_ready = false;
         }
     }
 
@@ -1239,9 +1372,96 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
     }
 
     static void ApplySnapTurningFromBackend(VR::IVRBackend* backend) {
-        if (backend) {
-            ApplySnapTurning(backend->GetControllerState(VR::Hand::Right));
+        ApplyTurningAndComfortInput(backend);
+    }
+
+    // Phase 6 HUD ops (wired into Stereo::FrameServices): composite the
+    // offscreen HUD target onto one eye target, and finish the HUD frame
+    // (clear the target + re-cache the backbuffer for the substitution hook).
+    static void CompositeHudOntoEye(ID3D11Device* device, ID3D11DeviceContext* context, VR::Eye eye) {
+        if (!Hud::GetState().hooksInstalled || !hmdRenderer) {
+            return;
         }
+        Hud::Composite(device, context, hmdRenderer->GetEyeRenderTarget(eye));
+    }
+
+    static void FinishHudFrameOp(ID3D11DeviceContext* context, ID3D11Texture2D* backbuffer) {
+        if (!Hud::GetState().hooksInstalled) {
+            return;
+        }
+        Hud::FinishFrame(context, backbuffer);
+    }
+
+    // Loads the [hud] registry from the build manifest (once) and installs
+    // the identification/substitution hooks on the shared d3d11
+    // implementation. Called at every early device-sighting point (creation
+    // proxies, swapchain hook) so it predates the game's shader compilation;
+    // no-op unless the manifest sets [hud] enabled=1.
+    static void EnsureHudIdentification(ID3D11Device* device) {
+        if (!device || Hud::GetState().hooksInstalled) {
+            return;
+        }
+        static std::mutex hud_init_mutex;
+        std::lock_guard<std::mutex> lock(hud_init_mutex);
+        if (Hud::GetState().hooksInstalled) {
+            return;
+        }
+
+        static bool registry_loaded = false;
+        if (!registry_loaded) {
+            registry_loaded = true;
+            Game::BuildManifest& manifest = Game::BuildManifest::Get();
+            manifest.Initialize();  // idempotent
+            std::wstring widePath = manifest.GetManifestPath();
+            char path[MAX_PATH * 2] = {};
+            if (!widePath.empty()) {
+                WideCharToMultiByte(CP_UTF8, 0, widePath.c_str(), -1, path, sizeof(path), nullptr, nullptr);
+            }
+            Hud::LoadRegistry(path);
+        }
+        Hud::EnsureHooksInstalled(device);
+    }
+
+    // gtavr_settings.ini [Comfort] keys that have no slot in
+    // VR::SharedSettings (owned by the VR layer): vehicleHorizonLock and
+    // smoothTurnSpeed. Loaded directly here so they apply on BOTH runtimes at
+    // startup; on the OpenVR path the overlay additionally live-applies them
+    // via ApplyOverlaySettingsOpenVR. Path resolution matches
+    // XROverlayUI::ResolveSettingsPath (SETTINGS_DIR-if-file-exists, then
+    // SETTINGS_PATH, then plain filename).
+    static void LoadComfortRuntimeFromIni() {
+        char path[MAX_PATH] = {};
+        char dir[MAX_PATH] = {};
+        DWORD len = GetEnvironmentVariableA("GTAVR_SETTINGS_DIR", dir, MAX_PATH);
+        bool resolved = false;
+        if (len > 0 && len < MAX_PATH) {
+            snprintf(path, sizeof(path), "%s\\gtavr_settings.ini", dir);
+            DWORD attrs = GetFileAttributesA(path);
+            resolved = (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY));
+        }
+        if (!resolved) {
+            len = GetEnvironmentVariableA("GTAVR_SETTINGS_PATH", path, MAX_PATH);
+            resolved = (len > 0 && len < MAX_PATH);
+        }
+        if (!resolved) {
+            strncpy_s(path, sizeof(path), "gtavr_settings.ini", _TRUNCATE);
+        }
+
+        auto& runtime = Stereo::GetComfortRuntime();
+        int horizonLock = GetPrivateProfileIntA("Comfort", "vehicleHorizonLock", -1, path);
+        if (horizonLock >= 0) {
+            runtime.vehicleHorizonLock.store(horizonLock != 0);
+        }
+        char value[64] = {};
+        if (GetPrivateProfileStringA("Comfort", "smoothTurnSpeed", "", value, sizeof(value), path) > 0) {
+            float speed = 0.0f;
+            if (sscanf_s(value, "%f", &speed) == 1 && speed >= 10.0f && speed <= 720.0f) {
+                runtime.smoothTurnSpeedDeg.store(speed);
+            }
+        }
+        LOGSTRF("D3DHooks_VRManager: Comfort runtime (ini): vehicleHorizonLock=%d smoothTurnSpeed=%.0f deg/s\n",
+                runtime.vehicleHorizonLock.load() ? 1 : 0,
+                static_cast<double>(runtime.smoothTurnSpeedDeg.load()));
     }
 
     void ShutdownVR();
@@ -1278,6 +1498,11 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             LOGSTR("D3DHooks_VRManager: Failed to get D3D11 device from swapchain.\n");
             return false;
         }
+
+        // Phase 5/6: comfort runtime keys + HUD identification (both no-op
+        // unless enabled in config/manifest).
+        LoadComfortRuntimeFromIni();
+        EnsureHudIdentification(device);
 
         ID3D11DeviceContext* context = nullptr;
         device->GetImmediateContext(&context);
@@ -1616,6 +1841,8 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         services.applySnapTurning = &ApplySnapTurningFromBackend;
         services.maybeResizeSwapchain = &MaybeResizeSwapchain;
         services.updateVignette = &UpdateVignetteParams;
+        services.compositeHud = &CompositeHudOntoEye;
+        services.finishHudFrame = &FinishHudFrameOp;
         services.prepareDepth = &PrepareDepthForReprojection;
         services.produceEye = &ProduceEyeFromBackbuffer;
         services.renderRightEye = &RenderRightEyeStereo;
@@ -1770,6 +1997,9 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         if (ppSwapChain && *ppSwapChain) {
             InstallSwapChainHooks(*ppSwapChain, "D3D11CreateDeviceAndSwapChain");
         }
+        if (SUCCEEDED(result) && ppDevice && *ppDevice) {
+            EnsureHudIdentification(*ppDevice);
+        }
 
         return result;
     }
@@ -1790,6 +2020,7 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             // (D3D12, video, other runtimes) is left alone.
             ID3D11Device* device11 = nullptr;
             if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D11Device), (void**)&device11)) && device11) {
+                EnsureHudIdentification(device11);
                 device11->Release();
                 InstallSwapChainHooks(*ppSwapChain, "IDXGIFactory::CreateSwapChain");
             }
@@ -1852,6 +2083,9 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         if (SUCCEEDED(result) && !present_hook_installed) {
             LOGSTR("D3DHooks_VRManager: D3D11CreateDevice called (split creation path) - swapchain hook will arrive via CreateSwapChain\n");
         }
+        if (SUCCEEDED(result) && ppDevice && *ppDevice) {
+            EnsureHudIdentification(*ppDevice);
+        }
         return result;
     }
 
@@ -1880,6 +2114,7 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         if (vertex_buffer_) { vertex_buffer_->Release(); vertex_buffer_ = nullptr; }
         if (input_layout_) { input_layout_->Release(); input_layout_ = nullptr; }
         ReleaseDepthResources();
+        Hud::ReleaseResources();
 
         overlay_ui.reset();
         overlay.reset();
@@ -1983,6 +2218,7 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
 
         if (present_hook_target_) { MH_RemoveHook(present_hook_target_); present_hook_target_ = nullptr; }
         if (resize_buffers_hook_target_) { MH_RemoveHook(resize_buffers_hook_target_); resize_buffers_hook_target_ = nullptr; }
+        Hud::UninstallHooks();
         if (create_device_and_swapchain_target) { MH_RemoveHook(create_device_and_swapchain_target); create_device_and_swapchain_target = nullptr; }
         if (create_device_target_) { MH_RemoveHook(create_device_target_); create_device_target_ = nullptr; }
         if (create_dxgi_factory1_target_) { MH_RemoveHook(create_dxgi_factory1_target_); create_dxgi_factory1_target_ = nullptr; }

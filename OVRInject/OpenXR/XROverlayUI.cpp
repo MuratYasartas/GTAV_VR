@@ -1,5 +1,6 @@
 #include "XROverlayUI.hpp"
 #include "../Log.hpp"
+#include "../Perf/PerfStats.hpp"
 #include "../VR/SharedSettings.hpp"
 #include "../VR/VRManager.hpp"
 
@@ -726,18 +727,24 @@ void XROverlayUI::RenderComfortSettings() {
     bool changed = false;
 
     changed |= ImGui::Checkbox("Snap Turning", &settings_.snapTurning);
-    ImGui::SetItemTooltip("Use discrete turn angles instead of smooth turning");
+    ImGui::SetItemTooltip("Use discrete turn angles instead of smooth turning (default ON - comfort safety)");
 
     if (settings_.snapTurning) {
         ImGui::Indent();
         changed |= ImGui::SliderFloat("Snap Angle", &settings_.snapTurnAngle, 15.0f, 90.0f, "%.0f deg");
         ImGui::Unindent();
+    } else {
+        ImGui::Indent();
+        changed |= ImGui::SliderFloat("Smooth Turn Speed", &settings_.smoothTurnSpeed, 30.0f, 360.0f, "%.0f deg/s");
+        ImGui::SetItemTooltip("Continuous turn speed (right stick). Smooth turning is the most common sickness trigger - prefer snap turn.");
+        ImGui::Unindent();
     }
+    ImGui::TextDisabled("Quick recenter: right stick click");
 
     ImGui::Separator();
 
     changed |= ImGui::Checkbox("Vignette (Tunnel Vision)", &settings_.vignetteEnabled);
-    ImGui::SetItemTooltip("Reduce peripheral vision during movement to reduce motion sickness");
+    ImGui::SetItemTooltip("Reduce peripheral vision during movement to reduce motion sickness (default ON). Fades in with locomotion, off while stationary.");
 
     if (settings_.vignetteEnabled) {
         ImGui::Indent();
@@ -746,6 +753,9 @@ void XROverlayUI::RenderComfortSettings() {
     }
 
     ImGui::Separator();
+
+    changed |= ImGui::Checkbox("Vehicle Horizon Lock", &settings_.vehicleHorizonLock);
+    ImGui::SetItemTooltip("Suppress vehicle pitch/roll from rotating the VR view (default ON). Yaw passes through. Requires VR decoupling.");
     ImGui::Text("VR Decoupling");
     ImGui::SetItemTooltip("Separate VR head rotation from game camera rotation");
 
@@ -809,6 +819,26 @@ void XROverlayUI::RenderPerformanceSettings() {
 #ifdef HAS_IMGUI
     ImGui::Text("Performance Settings");
     ImGui::Spacing();
+
+    // Live frametime stats (PerfStats, Phase 8 instrumentation). Percentile
+    // evidence matters: p99/p99.9, never averages.
+    {
+        Perf::PerfStats::Snapshot snap = Perf::PerfStats::Get().GetSnapshot();
+        ImGui::Text("Live Frame Stats");
+        if (snap.totalFrames > 0) {
+            ImGui::BulletText("FPS: %.1f", snap.fps);
+            ImGui::BulletText("Frametime p50:  %.2f ms", snap.p50Ms);
+            ImGui::BulletText("Frametime p99:  %.2f ms", snap.p99Ms);
+            ImGui::BulletText("Frametime p99.9: %.2f ms", snap.p999Ms);
+            ImGui::BulletText("Dropped frames (est): %u", snap.droppedEstimate);
+            ImGui::BulletText("Engine avg: blit %.2f ms, submit %.2f ms, camera %.2f ms",
+                              snap.blitAvgMs, snap.submitAvgMs, snap.cameraWriteAvgMs);
+        } else {
+            ImGui::TextDisabled("No frames recorded yet.");
+        }
+        ImGui::TextDisabled("F11 exports gtavr_perf.csv on demand.");
+        ImGui::Separator();
+    }
 
     bool changed = false;
 
@@ -1039,6 +1069,8 @@ bool XROverlayUI::LoadSettings(const char* filename) {
         else if (key == "snapTurnAngle") settings_.snapTurnAngle = std::stof(value);
         else if (key == "vignetteEnabled") settings_.vignetteEnabled = (value == "1" || value == "true");
         else if (key == "vignetteIntensity") settings_.vignetteIntensity = std::stof(value);
+        else if (key == "vehicleHorizonLock") settings_.vehicleHorizonLock = (value == "1" || value == "true");
+        else if (key == "smoothTurnSpeed") settings_.smoothTurnSpeed = std::stof(value);
         else if (key == "asyncReprojection") settings_.asyncReprojection = (value == "1" || value == "true");
         else if (key == "renderScale") settings_.renderScale = std::stof(value);
         else if (key == "gameResolutionScale") settings_.gameResolutionScale = std::stof(value);
@@ -1122,7 +1154,9 @@ bool XROverlayUI::SaveSettings(const char* filename) {
     file << "snapTurning=" << (settings_.snapTurning ? "1" : "0") << "\n";
     file << "snapTurnAngle=" << settings_.snapTurnAngle << "\n";
     file << "vignetteEnabled=" << (settings_.vignetteEnabled ? "1" : "0") << "\n";
-    file << "vignetteIntensity=" << settings_.vignetteIntensity << "\n\n";
+    file << "vignetteIntensity=" << settings_.vignetteIntensity << "\n";
+    file << "vehicleHorizonLock=" << (settings_.vehicleHorizonLock ? "1" : "0") << "\n";
+    file << "smoothTurnSpeed=" << settings_.smoothTurnSpeed << "\n\n";
 
     file << "[Performance]\n";
     file << "asyncReprojection=" << (settings_.asyncReprojection ? "1" : "0") << "\n";

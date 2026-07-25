@@ -1,5 +1,6 @@
 #include "StereoEngine.hpp"
 
+#include "ComfortRuntime.hpp"
 #include "../Log.hpp"
 #include "../Perf/PerfStats.hpp"
 #include "../VR/SharedSettings.hpp"
@@ -14,6 +15,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <string>
 
 namespace OVRInject {
@@ -50,16 +53,232 @@ float ReadManifestFloat(const std::string& manifestPath, const char* key, float 
     if (manifestPath.empty()) {
         return fallback;
     }
-    char value[64] = {};
-    DWORD len = GetPrivateProfileStringA("stereo", key, "", value, sizeof(value), manifestPath.c_str());
-    if (len == 0) {
+    // Manual parse, NOT GetPrivateProfileStringA: the repo manifests are
+    // LF-only and the Win32 INI API silently finds nothing in them (same
+    // parser style as HudRedirect's [hud] loader).
+    std::ifstream file(manifestPath);
+    if (!file.is_open()) {
         return fallback;
     }
-    float parsed = 0.0f;
-    if (sscanf_s(value, "%f", &parsed) == 1 && parsed > 0.0f) {
-        return parsed;
+    bool inStereo = false;
+    std::string line;
+    while (std::getline(file, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
+            line.pop_back();
+        }
+        if (line.empty() || line[0] == '#' || line[0] == ';') {
+            continue;
+        }
+        if (line[0] == '[') {
+            inStereo = (line == "[stereo]");
+            continue;
+        }
+        if (!inStereo) {
+            continue;
+        }
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        std::string name = line.substr(0, eq);
+        while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) {
+            name.pop_back();
+        }
+        if (name != key) {
+            continue;
+        }
+        float parsed = 0.0f;
+        if (sscanf_s(line.substr(eq + 1).c_str(), "%f", &parsed) == 1 && parsed > 0.0f) {
+            return parsed;
+        }
+        return fallback;
     }
     return fallback;
+}
+
+// ---- Vehicle horizon lock --------------------------------------------------
+// GTA V world up is +Z. While in a vehicle the game camera pitches and rolls
+// with the chassis; rotating the VR view with it is a top sickness trigger.
+// GtaCameraHook (read-only for this layer) composes finalRotation =
+// gameRotation * vrDeltaRotation and writes it to the game camera matrix.
+// This layer post-filters that write: the game's own rotation is read before
+// the hook runs (via the address the hook publishes in RuntimeStats), and
+// after the write the stored matrix is replaced with
+//
+//     corrected = yawOnly(gameRot) * inverse(gameRot) * stored
+//
+// which removes exactly the vehicle pitch/roll from the game component while
+// preserving yaw and the full VR head delta (GtaCameraHook.cpp:1393,
+// ComposeRotations = base * delta). When the hook did not write this frame,
+// the correction degrades to a plain horizon lock of the game's own camera.
+//
+// Layout mirror of Game::GtaCameraHook::GtaCameraMatrix (GtaCameraHook.hpp:71)
+// - the type itself is private to the hook, so the raw 64-byte layout is
+// restated here. Keep in sync.
+struct CameraMatrixSnapshot {
+    float right[4];
+    float forward[4];
+    float up[4];
+    float position[4];
+};
+static_assert(sizeof(CameraMatrixSnapshot) == 64, "GTA camera matrix layout drift");
+
+// Reads the current game camera matrix using the address the camera hook
+// publishes in RuntimeStats (set only after the hook validated writability).
+bool TryReadGameCameraSnapshot(CameraMatrixSnapshot& out) {
+    auto& stats = VR::GetRuntimeStats();
+    uintptr_t address = static_cast<uintptr_t>(stats.cameraMatrixAddress.load());
+    if (address == 0 || !stats.cameraMatrixWritable.load()) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) != sizeof(mbi) ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_READONLY |
+                        PAGE_EXECUTE_READ | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) == 0) {
+        return false;
+    }
+    memcpy(&out, reinterpret_cast<const void*>(address), sizeof(out));
+    return true;
+}
+
+// Rebuilds a rotation matrix from stored GTA basis vectors, matching
+// GtaCameraHook::ExtractRotationMatrix: rows are (right, up, forward).
+DirectX::XMMATRIX SnapshotToRotation(const CameraMatrixSnapshot& snapshot) {
+    DirectX::XMMATRIX rotation;
+    rotation.r[0] = DirectX::XMVector3Normalize(DirectX::XMVectorSet(
+        snapshot.right[0], snapshot.right[1], snapshot.right[2], 0.0f));
+    rotation.r[1] = DirectX::XMVector3Normalize(DirectX::XMVectorSet(
+        snapshot.up[0], snapshot.up[1], snapshot.up[2], 0.0f));
+    rotation.r[2] = DirectX::XMVector3Normalize(DirectX::XMVectorSet(
+        snapshot.forward[0], snapshot.forward[1], snapshot.forward[2], 0.0f));
+    rotation.r[3] = DirectX::XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+    return rotation;
+}
+
+// Builds the yaw-only variant of a game rotation: vehicle pitch/roll removed,
+// yaw preserved, basis kept orthonormal with the original handedness.
+// Returns false when the camera looks near-vertical (projection degenerate -
+// aerobatics edge case; the correction is skipped for that frame).
+bool BuildYawOnlyRotation(const DirectX::XMMATRIX& rotation, DirectX::XMMATRIX& out) {
+    using namespace DirectX;
+    XMVECTOR forward = rotation.r[2];
+    float fx = XMVectorGetX(forward);
+    float fy = XMVectorGetY(forward);
+    float horizontalSq = fx * fx + fy * fy;
+    if (horizontalSq < 0.0025f) {  // |horizontal forward| < 0.05
+        return false;
+    }
+    XMVECTOR flatForward = XMVector3Normalize(XMVectorSet(fx, fy, 0.0f, 0.0f));
+
+    // Keep the original right vector's azimuth: project it flat and
+    // orthonormalize against flatForward (Gram-Schmidt).
+    XMVECTOR right = rotation.r[0];
+    XMVECTOR flatRight = XMVectorSet(XMVectorGetX(right), XMVectorGetY(right), 0.0f, 0.0f);
+    XMVECTOR orthoRight = XMVectorSubtract(
+        flatRight, XMVectorScale(flatForward, XMVectorGetX(XMVector3Dot(flatRight, flatForward))));
+    if (XMVectorGetX(XMVector3Length(orthoRight)) < 0.01f) {
+        return false;  // 90-degree roll: azimuth of "right" undefined this frame
+    }
+    orthoRight = XMVector3Normalize(orthoRight);
+
+    // up = forward x right for a right-handed basis; pick the sign that
+    // matches the original basis so either handedness survives.
+    XMVECTOR upCandidate = XMVector3Cross(flatForward, orthoRight);
+    if (XMVectorGetX(XMVector3Dot(upCandidate, rotation.r[1])) < 0.0f) {
+        upCandidate = XMVectorNegate(upCandidate);
+    }
+
+    out.r[0] = orthoRight;
+    out.r[1] = upCandidate;
+    out.r[2] = flatForward;
+    out.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+    return true;
+}
+
+// Gate for the horizon-lock correction. Requires the camera hook (its write
+// is what we filter), the in-vehicle state, and the decoupling compose path:
+// without decoupling the hook writes a head-only rotation and filtering would
+// inject game yaw into it. Cutscenes are handled by the theater instead.
+bool ShouldApplyVehicleHorizonLock(const FrameServices& services, bool cameraReady) {
+    if (!cameraReady || !services.gameState) {
+        return false;
+    }
+    if (!GetComfortRuntime().vehicleHorizonLock.load()) {
+        return false;
+    }
+    Game::GtaGameState* gameState = services.gameState;
+    if (!gameState->IsInVehicle()) {
+        return false;
+    }
+    if (gameState->IsCutsceneActive() || gameState->IsLoading() || gameState->IsInMenu()) {
+        return false;
+    }
+    if (gameState->ShouldShowVirtualScreen()) {
+        return false;
+    }
+    if (!gameState->ShouldApplyDecoupling()) {
+        return false;
+    }
+    return true;
+}
+
+void StoreBasisRow(float* dst, DirectX::XMVECTOR row, float preservedW) {
+    dst[0] = DirectX::XMVectorGetX(row);
+    dst[1] = DirectX::XMVectorGetY(row);
+    dst[2] = DirectX::XMVectorGetZ(row);
+    dst[3] = preservedW;
+}
+
+// Replaces the stored post-write camera matrix with the horizon-locked
+// variant (see the block comment above). Returns true when a correction was
+// actually written. Position and the w components are preserved from the
+// hook's write; only the three basis vectors change.
+bool ApplyVehicleHorizonLockCorrection(const CameraMatrixSnapshot& pre) {
+    auto& stats = VR::GetRuntimeStats();
+    uintptr_t address = static_cast<uintptr_t>(stats.cameraMatrixAddress.load());
+    if (address == 0 || !stats.cameraMatrixWritable.load()) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) != sizeof(mbi) ||
+        mbi.State != MEM_COMMIT ||
+        (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY |
+                        PAGE_EXECUTE_WRITECOPY)) == 0) {
+        return false;
+    }
+
+    CameraMatrixSnapshot post = {};
+    memcpy(&post, reinterpret_cast<const void*>(address), sizeof(post));
+
+    DirectX::XMMATRIX preRotation = SnapshotToRotation(pre);
+    DirectX::XMMATRIX composed = SnapshotToRotation(post);
+    DirectX::XMMATRIX yawOnly;
+    if (!BuildYawOnlyRotation(preRotation, yawOnly)) {
+        static bool loggedSkip = false;
+        if (!loggedSkip) {
+            LOGSTR("StereoEngine: Vehicle horizon lock skipped a frame (near-vertical camera)\n");
+            loggedSkip = true;
+        }
+        return false;
+    }
+
+    DirectX::XMMATRIX corrected = DirectX::XMMatrixMultiply(
+        DirectX::XMMatrixMultiply(yawOnly, DirectX::XMMatrixInverse(nullptr, preRotation)),
+        composed);
+
+    CameraMatrixSnapshot out = post;
+    StoreBasisRow(out.right, corrected.r[0], post.right[3]);
+    StoreBasisRow(out.up, corrected.r[1], post.up[3]);
+    StoreBasisRow(out.forward, corrected.r[2], post.forward[3]);
+    memcpy(reinterpret_cast<void*>(address), &out, sizeof(out));
+
+    static bool loggedEngaged = false;
+    if (!loggedEngaged) {
+        LOGSTR("StereoEngine: Vehicle horizon lock engaged - vehicle pitch/roll filtered from the VR view (yaw passes through)\n");
+        loggedEngaged = true;
+    }
+    return true;
 }
 
 } // namespace
@@ -73,6 +292,7 @@ void StereoEngine::Initialize(VR::IVRBackend* backend) {
     frameIndex_ = 0;
     lastLoggedMode_ = -1;
     loggedBackbuffer_ = false;
+    horizonLockEngaged_ = false;
     ResolveClipPlanes();
     if (backend) {
         CacheProjections(backend);
@@ -310,7 +530,7 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         return services.originalPresent(pSwapChain, syncInterval, flags);
     }
     if (services.updateVignette) {
-        services.updateVignette(context);
+        services.updateVignette(context, backend);
     }
 
     // AER parity: the eye the game just rendered (and that the backbuffer
@@ -343,6 +563,25 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     }
 
     Perf::PerfStats::Get().AddBlitMs(NowMs() - sectionStart);
+
+    // Phase 6 HUD infrastructure: alpha-blit the offscreen HUD target onto
+    // each eye produced this frame, then clear it for the next frame. Both
+    // ops no-op unless the [hud] manifest section is enabled AND a HUD pass
+    // was actually substituted. On the virtual-screen (cutscene) path the HUD
+    // is not composited (documented v1 limitation).
+    if (services.compositeHud) {
+        if (wantAlternate) {
+            services.compositeHud(backend->GetDevice(), context, renderEye);
+        } else if (monoFallbackCopyBothEyes) {
+            services.compositeHud(backend->GetDevice(), context, VR::Eye::Left);
+        } else if (!showVirtualScreen) {
+            services.compositeHud(backend->GetDevice(), context, VR::Eye::Left);
+            services.compositeHud(backend->GetDevice(), context, VR::Eye::Right);
+        }
+    }
+    if (services.finishHudFrame) {
+        services.finishHudFrame(context, pBuffer);
+    }
 
     if (services.updateOverlay) {
         services.updateOverlay();
@@ -387,6 +626,13 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     // (3) LATE-LATCH the head pose immediately before the camera write.
     LatchHeadPose(backend);
 
+    // Vehicle horizon lock: snapshot the game's own camera rotation before the
+    // hook composes over it; the correction below removes the vehicle
+    // pitch/roll from the composed result.
+    bool horizonLock = ShouldApplyVehicleHorizonLock(services, cameraReady);
+    CameraMatrixSnapshot preSnapshot = {};
+    bool havePreSnapshot = horizonLock && TryReadGameCameraSnapshot(preSnapshot);
+
     if (cameraHook) {
         if (wantAlternate && cameraHook->IsReady()) {
             // The game renders the OTHER eye next frame; write that eye's
@@ -400,6 +646,10 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         if (stereoSettings.recenterRequested.exchange(false)) {
             cameraHook->RecenterPose();
         }
+    }
+
+    if (havePreSnapshot && ApplyVehicleHorizonLockCorrection(preSnapshot)) {
+        horizonLockEngaged_ = true;
     }
 
     Perf::PerfStats::Get().AddCameraWriteMs(NowMs() - sectionStart);

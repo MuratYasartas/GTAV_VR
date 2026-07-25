@@ -63,11 +63,14 @@ struct VRSettings {
     bool headTracking = true;
     bool positionTracking = true;
 
-    // Comfort
-    bool snapTurning = false;
+    // Comfort (defaults per docs/user/comfort.md: snap turn ON, vignette ON,
+    // vehicle horizon lock ON - comfort is a safety requirement)
+    bool snapTurning = true;
     float snapTurnAngle = 45.0f;
-    bool vignetteEnabled = false;
+    bool vignetteEnabled = true;
     float vignetteIntensity = 0.5f;
+    bool vehicleHorizonLock = true;   // suppress vehicle pitch/roll in VR view
+    float smoothTurnSpeed = 120.0f;   // deg/s, used when snapTurning == false
 
     // Performance
     bool asyncReprojection = true;

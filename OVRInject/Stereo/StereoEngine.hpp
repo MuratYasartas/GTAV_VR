@@ -72,7 +72,17 @@ struct FrameServices {
     // Ops implemented by the D3D hook layer (see D3DHooks_VRManager.hpp).
     void (*applySnapTurning)(VR::IVRBackend*) = nullptr;
     void (*maybeResizeSwapchain)(IDXGISwapChain*) = nullptr;
-    void (*updateVignette)(ID3D11DeviceContext*) = nullptr;
+    // Updates the vignette constant buffer; the backend is used for the
+    // locomotion proxy (head-translation delta + left stick).
+    void (*updateVignette)(ID3D11DeviceContext*, VR::IVRBackend*) = nullptr;
+    // Phase 6 HUD infrastructure (config-gated; both no-op when the [hud]
+    // manifest section is disabled or no HUD pass was substituted this frame).
+    // compositeHud alpha-blits the offscreen HUD target onto one eye target.
+    void (*compositeHud)(ID3D11Device*, ID3D11DeviceContext*, VR::Eye) = nullptr;
+    // finishHudFrame clears the HUD target for the next frame and re-caches
+    // the presented backbuffer for the substitution hook. Called once per
+    // Present after the eye composites.
+    void (*finishHudFrame)(ID3D11DeviceContext*, ID3D11Texture2D*) = nullptr;
     // Copies the current depth-stencil into a shader-readable texture for the
     // Z3D path; returns false when depth is unavailable (caller then blits).
     bool (*prepareDepth)(ID3D11Device*, ID3D11DeviceContext*) = nullptr;
@@ -110,6 +120,9 @@ public:
     float GetRuntimeIpd() const { return runtimeIpd_; }
     float GetNearPlane() const { return nearPlane_; }
     float GetFarPlane() const { return farPlane_; }
+    // True while the vehicle horizon-lock correction is engaged this session
+    // (set when the first correction is actually applied).
+    bool WasVehicleHorizonLockEngaged() const { return horizonLockEngaged_; }
     DirectX::XMMATRIX GetEyeProjection(VR::Eye eye) const {
         return projectionCached_[static_cast<int>(eye) & 1];
     }
@@ -142,6 +155,7 @@ private:
     bool loggedMirrorSync_ = false;
     bool loggedBackbuffer_ = false;
     bool loggedLateLatch_ = false;
+    bool horizonLockEngaged_ = false;   // first applied correction logs + latches
 };
 
 } // namespace Stereo
