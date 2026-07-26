@@ -451,6 +451,11 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     Game::VRCamera* vrCamera = services.vrCamera;
     const bool vrCameraReady = vrCamera && vrCamera->IsAvailable();
     bool cameraReady = (cameraHook && cameraHook->IsReady()) || vrCameraReady;
+    // The scripted camera owns the view: idle the memory hook's worker
+    // (without this it spins at 100% of a core - see GtaCameraHook.hpp).
+    if (cameraHook) {
+        cameraHook->SetStandby(vrCameraReady);
+    }
 
     if (services.cameraFov) {
         services.cameraFov->Update(VR::GetFovSettings());

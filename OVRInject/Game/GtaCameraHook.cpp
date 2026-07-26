@@ -360,6 +360,14 @@ void GtaCameraHook::WorkerMain() {
     uint32_t passIndex = 0;
 
     while (!worker_stop_.load(std::memory_order_acquire)) {
+        // Standby (scripted camera owns the camera): idle long. Also drop a
+        // stale unconsumed handoff so reactivation starts clean.
+        if (standby_.load(std::memory_order_acquire)) {
+            handoff_pending_.store(false, std::memory_order_release);
+            WaitForWorkerEvent(1000);
+            continue;
+        }
+
         // Never resolve (or keep resolving) while the online guard is hot.
         if (OnlineGuard::Get().ShouldDisableMod()) {
             WaitForWorkerEvent(1000);
@@ -1475,6 +1483,9 @@ void GtaCameraHook::Update(VR::Eye eye) {
 }
 
 void GtaCameraHook::Update(VR::Eye eye, GtaGameState* gameState) {
+    if (standby_.load(std::memory_order_acquire)) {
+        return;  // scripted camera owns the view
+    }
     update_count_++;
 
     // OnlineGuard hard-disable: skip ALL camera writes (single-player-only

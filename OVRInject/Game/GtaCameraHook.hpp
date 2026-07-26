@@ -46,6 +46,15 @@ public:
     // Update with explicit game state reference
     void Update(VR::Eye eye, GtaGameState* gameState);
 
+    // Stand down the resolution worker (and skip render-thread consumption)
+    // when the scripted-camera path owns the camera. Without this the worker
+    // spins at 100% of a core: its published candidates are never consumed
+    // (Update() is not called), handoff_pending_ stays set forever, and the
+    // give-up path never engages (observed live: ~1500 passes/sec, 9.8 GB of
+    // log spam in one session).
+    void SetStandby(bool on) { standby_.store(on, std::memory_order_release); }
+    bool IsStandby() const { return standby_.load(std::memory_order_acquire); }
+
     // Returns true if we successfully found the camera
     bool IsReady() const;
 
@@ -200,6 +209,10 @@ private:
     std::atomic<uint64_t> handoff_hash_key_{0};
     std::atomic<uint64_t> handoff_hash_name_{0};
     std::atomic<bool> handoff_pending_{false};
+
+    // Standby mode (scripted camera owns the view): the worker idles long
+    // and Update() returns immediately.
+    std::atomic<bool> standby_{false};
 
     // Set by RecenterPose (manual retry) - the worker runs one full pass.
     std::atomic<bool> retry_requested_{false};
