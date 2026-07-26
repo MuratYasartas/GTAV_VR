@@ -13,34 +13,48 @@ namespace {
 constexpr float kDegToRad = 0.01745329251994329577f;
 constexpr float kRadToDeg = 57.295779513082320876f;
 
-// GTA euler (order 2, degrees) -> internal matrix with rows (right, up,
-// forward) holding GTA-world axis values. GTA-native row-vector build:
-// M = Rx(rx) * Ry(ry) * Rz(rz) gives rows (right, forward, up); we swap the
-// last two rows into the hook's internal layout.
-DirectX::XMMATRIX GtaEulerToInternal(float rxDeg, float ryDeg, float rzDeg) {
+// Frame conventions (derived + hand-verified 2026-07-26):
+//
+// GTA V world: x=east, y=north, z=up. Camera basis B uses the GAME matrix
+// layout: rows (right, forward, up) in GTA-world coords. Order-2 euler
+// (degrees): rx=pitch about cam-right (positive=look up), ry=roll about
+// cam-forward, rz=yaw about world-up (0=north, positive=counterclockwise).
+// Row-vector build B = Rx*Ry*Rz yields exactly rows (right, forward, up).
+//
+// XR head pose (XrPoseToMatrix): rows are the head's local axes in tracking
+// coords with x=right, y=up, z=BACK (OpenXR forward is -Z).
+//
+// Delta chain:
+//   D_local = H * R^-1   (head delta in the reference head-local frame)
+//   D_cam   = Jt * D_local * J   (axis remap XR -> GTA-cam-local)
+//   B'      = D_cam * B          (delta applied in camera-LOCAL space)
+// with J rows [(1,0,0),(0,0,1),(0,-1,0)]: xr-x -> cam-right, xr-y -> cam-up,
+// xr-z(back) -> -cam-forward.
+// Hand-checked: pure yaw-left -> D_cam=Rz(+a) -> cam yaw +a (CCW=left);
+// pure pitch-up -> Rx(+a) -> pitch +a (up); roll-right -> Ry(+a).
+
+// XR-head-local -> GTA-cam-local axis remap.
+const DirectX::XMMATRIX kXrToCam =
+    DirectX::XMMATRIX(1, 0, 0, 0,
+                      0, 0, 1, 0,
+                      0, -1, 0, 0,
+                      0, 0, 0, 1);
+
+DirectX::XMMATRIX GtaEulerToBasis(float rxDeg, float ryDeg, float rzDeg) {
     using namespace DirectX;
-    const XMMATRIX m = XMMatrixRotationX(rxDeg * kDegToRad) *
-                       XMMatrixRotationY(ryDeg * kDegToRad) *
-                       XMMatrixRotationZ(rzDeg * kDegToRad);
-    XMMATRIX r;
-    r.r[0] = m.r[0];              // right
-    r.r[1] = m.r[2];              // up
-    r.r[2] = m.r[1];              // forward
-    r.r[3] = XMVectorSet(0, 0, 0, 1);
-    return r;
+    return XMMatrixRotationX(rxDeg * kDegToRad) *
+           XMMatrixRotationY(ryDeg * kDegToRad) *
+           XMMatrixRotationZ(rzDeg * kDegToRad);
+    // rows: r0=right, r1=forward, r2=up (GTA world coords)
 }
 
-// Inverse of the above. For rows (right, up, forward) with the GTA order-2
-// factorization M = Rx*Ry*Rz (rows right/forward/up):
-//   pitch = atan2(forward.z, up.z)
-//   roll  = asin(-right.z)
-//   yaw   = atan2(right.y, right.x)
-void InternalToGtaEuler(const DirectX::XMMATRIX& r, float& rxDeg, float& ryDeg, float& rzDeg) {
-    const float rightX = r.r[0].m128_f32[0];
-    const float rightY = r.r[0].m128_f32[1];
-    const float rightZ = r.r[0].m128_f32[2];
-    const float upZ = r.r[1].m128_f32[2];
-    const float fwdZ = r.r[2].m128_f32[2];
+// Inverse of GtaEulerToBasis (exact round-trip for |roll| < 90 deg).
+void BasisToGtaEuler(const DirectX::XMMATRIX& b, float& rxDeg, float& ryDeg, float& rzDeg) {
+    const float rightX = b.r[0].m128_f32[0];
+    const float rightY = b.r[0].m128_f32[1];
+    const float rightZ = b.r[0].m128_f32[2];
+    const float fwdZ = b.r[1].m128_f32[2];
+    const float upZ = b.r[2].m128_f32[2];
 
     float s = -rightZ;
     if (s > 1.0f) s = 1.0f;
@@ -104,8 +118,9 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     auto& shv = ShvNatives::Get();
     if (!shv.IsAvailable()) return;
 
-    // Cutscenes / loading: give the camera back to the game.
-    if (gameState && (gameState->IsCutsceneActive() || gameState->IsLoading())) {
+    // Cutscenes / loading / menus: give the camera back to the game.
+    if (gameState && (gameState->IsCutsceneActive() || gameState->IsLoading() ||
+                      gameState->IsInMenu())) {
         Disengage();
         return;
     }
@@ -134,7 +149,8 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
 
     // Base pose from the gameplay camera (still engine-driven: follows the
     // player, vehicles, aiming - we only add the VR delta on top).
-    DirectX::XMMATRIX gameRot = GtaEulerToInternal(snap.rotX, snap.rotY, snap.rotZ);
+    const DirectX::XMMATRIX basis =
+        GtaEulerToBasis(snap.rotX, snap.rotY, snap.rotZ);
 
     // Head pose (late-latched by the stereo engine already).
     DirectX::XMMATRIX headPose = backend_ ? backend_->GetHeadPoseMatrix()
@@ -160,12 +176,16 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         ? DirectX::XMMatrixInverse(nullptr, refRot_)
         : DirectX::XMMatrixIdentity();
 
-    const DirectX::XMMATRIX vrDelta = headTracking
-        ? DirectX::XMMatrixMultiply(refInv, headRot)
+    // Head delta in the reference head-local frame, remapped to cam-local.
+    const DirectX::XMMATRIX dLocal = headTracking
+        ? DirectX::XMMatrixMultiply(headRot, refInv)
         : DirectX::XMMatrixIdentity();
+    const DirectX::XMMATRIX kJt = DirectX::XMMatrixTranspose(kXrToCam);
+    const DirectX::XMMATRIX dCam = DirectX::XMMatrixMultiply(
+        DirectX::XMMatrixMultiply(kJt, dLocal), kXrToCam);
 
-    // Same composition as the memory path: delta in camera-local space.
-    const DirectX::XMMATRIX finalRot = DirectX::XMMatrixMultiply(gameRot, vrDelta);
+    // Apply in camera-local space, then carry the world basis.
+    const DirectX::XMMATRIX finalBasis = DirectX::XMMatrixMultiply(dCam, basis);
 
     // --- Position -----------------------------------------------------------
     float worldScale = cameraSettings.worldScale.load();
@@ -183,16 +203,32 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         }
         DirectX::XMVECTOR delta = DirectX::XMVectorSubtract(headPos, refPos_);
         delta = DirectX::XMVectorScale(delta, worldScale);
-        const DirectX::XMMATRIX trackingToWorld =
-            DirectX::XMMatrixMultiply(gameRot, refInv);
+        // tracking coords -> ref-head-local -> cam-local -> GTA world
+        const DirectX::XMMATRIX trackToWorld = DirectX::XMMatrixMultiply(
+            DirectX::XMMatrixMultiply(refInv, kXrToCam), basis);
         totalOffset = DirectX::XMVectorAdd(
-            totalOffset, DirectX::XMVector3Transform(delta, trackingToWorld));
+            totalOffset, DirectX::XMVector3Transform(delta, trackToWorld));
     } else {
         hasRefPos_ = false;
     }
 
-    // Per-eye stereo offset (AER): the eye's tracking-space offset rotated
-    // into the world by the final orientation, scaled to the configured IPD.
+    // User camera offsets (same semantics as the memory path): X right,
+    // Y up, Z forward in camera space, plus the standing-height correction.
+    {
+        const float heightOffset = cameraSettings.playerHeight.load() - 1.7f;
+        // cam-local component order for the basis rows (right, forward, up)
+        const DirectX::XMVECTOR localCam = DirectX::XMVectorScale(
+            DirectX::XMVectorSet(cameraSettings.cameraOffsetX.load(),
+                                 cameraSettings.cameraOffsetZ.load(),
+                                 cameraSettings.cameraOffsetY.load() + heightOffset,
+                                 0.0f),
+            worldScale);
+        totalOffset = DirectX::XMVectorAdd(
+            totalOffset, DirectX::XMVector3Transform(localCam, finalBasis));
+    }
+
+    // Per-eye stereo offset (AER): XR eye offset (head-local) -> cam-local ->
+    // world, scaled to the configured IPD.
     if (stereoSettings.mode.load() == static_cast<int>(VR::StereoMode::AlternateEye)) {
         const float desiredIpd = stereoSettings.stereoIPD.load();
         DirectX::XMVECTOR eyeLocal = DirectX::XMVectorZero();
@@ -211,7 +247,8 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         }
         eyeLocal = DirectX::XMVectorScale(eyeLocal, worldScale);
         totalOffset = DirectX::XMVectorAdd(
-            totalOffset, DirectX::XMVector3Transform(eyeLocal, finalRot));
+            totalOffset, DirectX::XMVector3Transform(
+                             eyeLocal, DirectX::XMMatrixMultiply(kXrToCam, finalBasis)));
     }
 
     const DirectX::XMVECTOR finalPos = DirectX::XMVectorAdd(
@@ -219,7 +256,7 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         totalOffset);
 
     float rx, ry, rz;
-    InternalToGtaEuler(finalRot, rx, ry, rz);
+    BasisToGtaEuler(finalBasis, rx, ry, rz);
 
     shv.CamSetCoord(cam_,
                     DirectX::XMVectorGetX(finalPos),
@@ -227,11 +264,31 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
                     DirectX::XMVectorGetZ(finalPos));
     shv.CamSetRot(cam_, rx, ry, rz);
 
-    // FOV pass-through (gameplay FOV, including aim zoom). XR-matched FOV is
-    // a follow-up; keep one variable at a time.
-    if (snap.fov > 1.0f && std::fabs(snap.fov - lastFov_) > 0.25f) {
-        shv.CamSetFov(cam_, snap.fov);
-        lastFov_ = snap.fov;
+    // FOV: pass-through of the gameplay FOV by default (includes aim zoom);
+    // the overlay's Camera FOV Override takes over when enabled (per-type
+    // selection uses the live game state). XR-matched FOV is a follow-up.
+    float desiredFov = snap.fov;
+    auto& fovSettings = VR::GetFovSettings();
+    if (fovSettings.enabled.load()) {
+        if (fovSettings.perType.load() && gameState) {
+            if (gameState->IsInVehicle()) {
+                desiredFov = gameState->IsFirstPerson()
+                    ? fovSettings.fpVehicleFov.load()
+                    : fovSettings.tpVehicleFov.load();
+            } else if (gameState->IsAiming()) {
+                desiredFov = fovSettings.tpAimFov.load();
+            } else {
+                desiredFov = gameState->IsFirstPerson()
+                    ? fovSettings.fpPedFov.load()
+                    : fovSettings.tpPedFov.load();
+            }
+        } else {
+            desiredFov = fovSettings.globalFov.load();
+        }
+    }
+    if (desiredFov > 1.0f && std::fabs(desiredFov - lastFov_) > 0.25f) {
+        shv.CamSetFov(cam_, desiredFov);
+        lastFov_ = desiredFov;
     }
 
     updateCount_++;

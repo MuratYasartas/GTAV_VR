@@ -670,17 +670,20 @@ void XROverlayUI::RenderWorldSettings() {
     ImGui::Separator();
     ImGui::Text("Image Alignment");
     constexpr float kImageStep = 0.01f;
-    bool offsetXChanged = ImGui::SliderFloat("Stereo Offset X", &settings_.imageOffsetX, -1.0f, 1.0f, "%.3f");
-    offsetXChanged |= nudgeButtons("StereoOffsetX", settings_.imageOffsetX, kImageStep, -1000.0f, 1000.0f);
+    // Note: 1.0 unit = 1% of the image width/height (Stereo/ImageFit.hpp
+    // kImageOffsetScale). Convergence needs double-digit units on AER -
+    // the old +/-1 range (1%) was far too small to ever reach superposition.
+    bool offsetXChanged = ImGui::SliderFloat("Stereo Offset X", &settings_.imageOffsetX, -30.0f, 30.0f, "%.2f");
+    offsetXChanged |= nudgeButtons("StereoOffsetX", settings_.imageOffsetX, kImageStep, -100.0f, 100.0f);
     if (offsetXChanged) {
-        settings_.imageOffsetX = clampValue(snapToStep(settings_.imageOffsetX, kImageStep), -1000.0f, 1000.0f);
+        settings_.imageOffsetX = clampValue(snapToStep(settings_.imageOffsetX, kImageStep), -100.0f, 100.0f);
         changed = true;
     }
 
-    bool offsetYChanged = ImGui::SliderFloat("Stereo Offset Y", &settings_.imageOffsetY, -1.0f, 1.0f, "%.3f");
-    offsetYChanged |= nudgeButtons("StereoOffsetY", settings_.imageOffsetY, kImageStep, -1000.0f, 1000.0f);
+    bool offsetYChanged = ImGui::SliderFloat("Stereo Offset Y", &settings_.imageOffsetY, -15.0f, 15.0f, "%.2f");
+    offsetYChanged |= nudgeButtons("StereoOffsetY", settings_.imageOffsetY, kImageStep, -100.0f, 100.0f);
     if (offsetYChanged) {
-        settings_.imageOffsetY = clampValue(snapToStep(settings_.imageOffsetY, kImageStep), -1000.0f, 1000.0f);
+        settings_.imageOffsetY = clampValue(snapToStep(settings_.imageOffsetY, kImageStep), -100.0f, 100.0f);
         changed = true;
     }
 
