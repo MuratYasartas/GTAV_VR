@@ -238,8 +238,11 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     }
 
     // Per-eye stereo offset (AER): XR eye offset (head-local) -> cam-local ->
-    // world, scaled to the configured IPD.
+    // world. Auto mode (default) uses the runtime's own eye offset - the
+    // physically correct IPD for the HMD; manual mode scales it to the
+    // overlay's stereoIPD value (or falls back to it entirely).
     if (stereoSettings.mode.load() == static_cast<int>(VR::StereoMode::AlternateEye)) {
+        const bool ipdAuto = stereoSettings.ipdAuto.load();
         const float desiredIpd = stereoSettings.stereoIPD.load();
         DirectX::XMVECTOR eyeLocal = DirectX::XMVectorZero();
         if (backend_) {
@@ -250,9 +253,10 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         }
         const float runtimeIpd = std::fabs(DirectX::XMVectorGetX(eyeLocal)) * 2.0f;
         if (runtimeIpd < 0.0001f) {
+            // Runtime reports no eye offset: slider is the only source.
             const float sign = (eye == VR::Eye::Left) ? -0.5f : 0.5f;
             eyeLocal = DirectX::XMVectorSet(sign * desiredIpd, 0, 0, 0);
-        } else {
+        } else if (!ipdAuto) {
             eyeLocal = DirectX::XMVectorScale(eyeLocal, desiredIpd / runtimeIpd);
         }
         eyeLocal = DirectX::XMVectorScale(eyeLocal, worldScale);

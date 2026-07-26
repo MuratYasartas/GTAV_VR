@@ -283,6 +283,7 @@ namespace VRMgr {
         auto& stereo = VR::GetStereoSettings();
         stereo.mode.store(settings.stereoMode);
         stereo.stereoIPD.store(settings.stereoIPD);
+        stereo.ipdAuto.store(settings.ipdAuto);
         bool cameraReady = VR::GetRuntimeStats().cameraHookReady.load();
         bool allowHeadLookViewLock = ReadEnvFlag("GTAVR_HEADLOOK_VIEWLOCK", false);
         bool headLookActive = settings.headLookEnabled && !cameraReady && allowHeadLookViewLock;
@@ -2055,6 +2056,46 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                             VR::GetRuntimeStats().cameraHookReady.load() ? "hooked" : "NOT resolved (see GtaCameraHook lines)");
                 } else {
                     LOGSTR("=== GTAVR MOD INERT === VR backend unavailable (runtime not detected?) - pass-through mode\n");
+                }
+            }
+
+            // EXPERIMENTAL (env GTAVR_BACKBUFFER_SCALE or %TEMP% file of the
+            // same name, e.g. 1.5 / 2.0): force the game swapchain larger than
+            // the desktop window so the 3D render happens at a higher
+            // resolution (VR sharpness lever). The %TEMP% file fallback exists
+            // because GTA5 inherits its environment from the Rockstar service
+            // (user-level env vars never reach it). UNVERIFIED whether RAGE
+            // renders bigger or just letterboxes - check with an F12 dump.
+            {
+                float bbScale = 0.0f;
+                char scaleBuf[16] = {};
+                DWORD scaleLen = GetEnvironmentVariableA("GTAVR_BACKBUFFER_SCALE", scaleBuf, sizeof(scaleBuf));
+                if (scaleLen > 0) bbScale = static_cast<float>(atof(scaleBuf));
+                if (bbScale <= 0.0f) {
+                    char tmpPath[MAX_PATH];
+                    if (GetTempPathA(MAX_PATH, tmpPath) > 0) {
+                        strncat_s(tmpPath, "gtavr_backbuffer_scale.txt", _TRUNCATE);
+                        FILE* sf = nullptr;
+                        if (fopen_s(&sf, tmpPath, "r") == 0 && sf) {
+                            if (fgets(scaleBuf, sizeof(scaleBuf), sf)) {
+                                bbScale = static_cast<float>(atof(scaleBuf));
+                            }
+                            fclose(sf);
+                        }
+                    }
+                }
+                if (bbScale > 1.01f) {
+                    DXGI_SWAP_CHAIN_DESC scDesc = {};
+                    if (SUCCEEDED(pSwapChain->GetDesc(&scDesc))) {
+                        UINT newW = static_cast<UINT>(scDesc.BufferDesc.Width * bbScale + 0.5f);
+                        UINT newH = static_cast<UINT>(scDesc.BufferDesc.Height * bbScale + 0.5f);
+                        LOGSTRF("D3DHooks_VRManager: GTAVR_BACKBUFFER_SCALE=%.2f - forcing backbuffer %ux%u -> %ux%u (EXPERIMENTAL)\n",
+                                bbScale, scDesc.BufferDesc.Width, scDesc.BufferDesc.Height, newW, newH);
+                        HRESULT rbHr = pSwapChain->ResizeBuffers(0, newW, newH,
+                                                                 DXGI_FORMAT_UNKNOWN, 0);
+                        LOGSTRF("D3DHooks_VRManager: forced ResizeBuffers -> 0x%08lX\n",
+                                static_cast<long>(rbHr));
+                    }
                 }
             }
 

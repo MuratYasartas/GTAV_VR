@@ -60,6 +60,7 @@ struct VRSettings {
     // Stereo
     int stereoMode = 1; // 0 = Reprojection, 1 = Alternate-Eye
     float stereoIPD = 0.0617f;
+    bool ipdAuto = true;   // eye offset from the runtime (physical HMD IPD)
     bool headTracking = true;
     bool positionTracking = true;
 

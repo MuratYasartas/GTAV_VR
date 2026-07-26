@@ -90,6 +90,10 @@ struct ReprojectionSettings {
 struct StereoSettings {
     std::atomic<int> mode{static_cast<int>(StereoMode::AlternateEye)};
     std::atomic<float> stereoIPD{0.0617f};
+    // When true (default), the per-eye offset comes from the runtime's own
+    // eye poses (xrLocateViews) and the stereoIPD slider is ignored - the
+    // physically correct IPD for the HMD. When false, the slider rules.
+    std::atomic<bool> ipdAuto{true};
     std::atomic<bool> headTracking{true};
     std::atomic<bool> positionTracking{true};
     std::atomic<bool> recenterRequested{false};

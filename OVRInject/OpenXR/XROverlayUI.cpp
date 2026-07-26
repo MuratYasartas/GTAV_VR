@@ -643,8 +643,12 @@ void XROverlayUI::RenderWorldSettings() {
         settings_.stereoMode = stereoMode;
         changed = true;
     }
-    changed |= ImGui::SliderFloat("Stereo IPD (m)", &settings_.stereoIPD, 0.04f, 0.08f, "%.4f");
-    ImGui::SetItemTooltip("Fallback only: the IPD reported by the VR runtime overrides this value whenever available.");
+    changed |= ImGui::Checkbox("Auto IPD (runtime)", &settings_.ipdAuto);
+    ImGui::SetItemTooltip("Eye offset taken from the HMD's own tracking data - the physically correct IPD. Recommended.");
+    if (!settings_.ipdAuto) {
+        changed |= ImGui::SliderFloat("Stereo IPD (m)", &settings_.stereoIPD, 0.04f, 0.08f, "%.4f");
+        ImGui::SetItemTooltip("Manual IPD (only when Auto is off). Fallback: used when the runtime reports no eye offset.");
+    }
     changed |= ImGui::Checkbox("Head Tracking", &settings_.headTracking);
     changed |= ImGui::Checkbox("Position Tracking", &settings_.positionTracking);
     if (settings_.stereoMode != 0 || settings_.headLookEnabled) {
@@ -1091,6 +1095,7 @@ bool XROverlayUI::LoadSettings(const char* filename) {
         else if (key == "fovManualOffset") settings_.fovManualOffset = std::stoi(value, nullptr, 0);
         else if (key == "stereoMode") settings_.stereoMode = std::stoi(value);
         else if (key == "stereoIPD") settings_.stereoIPD = std::stof(value);
+        else if (key == "ipdAuto") settings_.ipdAuto = (value == "1" || value == "true");
         else if (key == "headTracking") settings_.headTracking = (value == "1" || value == "true");
         else if (key == "positionTracking") settings_.positionTracking = (value == "1" || value == "true");
         else if (key == "snapTurning") settings_.snapTurning = (value == "1" || value == "true");
@@ -1175,6 +1180,7 @@ bool XROverlayUI::SaveSettings(const char* filename) {
     file << "[Stereo]\n";
     file << "stereoMode=" << settings_.stereoMode << "\n";
     file << "stereoIPD=" << settings_.stereoIPD << "\n";
+    file << "ipdAuto=" << (settings_.ipdAuto ? 1 : 0) << "\n";
     file << "headTracking=" << (settings_.headTracking ? "1" : "0") << "\n";
     file << "positionTracking=" << (settings_.positionTracking ? "1" : "0") << "\n\n";
 

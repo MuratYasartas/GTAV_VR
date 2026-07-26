@@ -887,6 +887,7 @@ void XRHMDSupport::ApplyOverlaySettings(const XR::VRSettings& settings) {
     auto& stereo = VR::GetStereoSettings();
     stereo.mode.store(settings.stereoMode);
     stereo.stereoIPD.store(settings.stereoIPD);
+    stereo.ipdAuto.store(settings.ipdAuto);
     bool cameraReady = VR::GetRuntimeStats().cameraHookReady.load();
     bool allowHeadLookViewLock = ReadEnvFlag("GTAVR_HEADLOOK_VIEWLOCK", false);
     bool headLookActive = settings.headLookEnabled && !cameraReady && allowHeadLookViewLock;
