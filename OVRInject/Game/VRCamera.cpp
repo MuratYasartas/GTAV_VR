@@ -274,10 +274,20 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
                     DirectX::XMVectorGetZ(finalPos));
     shv.CamSetRot(cam_, rx, ry, rz);
 
-    // FOV: pass-through of the gameplay FOV by default (includes aim zoom);
-    // the overlay's Camera FOV Override takes over when enabled (per-type
-    // selection uses the live game state). XR-matched FOV is a follow-up.
-    float desiredFov = snap.fov;
+    // FOV: default = the XR per-eye vertical FOV, so the game frustum covers
+    // the HMD's (paired with the angular crop in the blit - fixes the
+    // "zoomed-in, low-res" feel of the raw pass-through). The overlay's
+    // Camera FOV Override takes over when enabled; gameplay aim-zoom is only
+    // used as a fallback when the XR FOV is unavailable.
+    float xrVfovDeg = 0.0f;
+    if (backend_) {
+        const DirectX::XMMATRIX proj = backend_->GetProjectionMatrix(eye, 0.1f, 100.0f);
+        const float m11 = proj.r[1].m128_f32[1];
+        if (m11 > 0.01f) {
+            xrVfovDeg = 2.0f * atanf(1.0f / m11) * kRadToDeg;
+        }
+    }
+    float desiredFov = (xrVfovDeg > 30.0f) ? xrVfovDeg : snap.fov;
     auto& fovSettings = VR::GetFovSettings();
     if (fovSettings.enabled.load()) {
         if (fovSettings.perType.load() && gameState) {
@@ -296,9 +306,15 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
             desiredFov = fovSettings.globalFov.load();
         }
     }
-    if (desiredFov > 1.0f && std::fabs(desiredFov - lastFov_) > 0.25f) {
-        shv.CamSetFov(cam_, desiredFov);
-        lastFov_ = desiredFov;
+    if (desiredFov > 1.0f) {
+        // Published for the blit's angular crop (D3DHooks_VRManager).
+        VR::GetRuntimeStats().activeFov.store(desiredFov);
+        if (std::fabs(desiredFov - lastFov_) > 0.25f) {
+            shv.CamSetFov(cam_, desiredFov);
+            lastFov_ = desiredFov;
+            LOGSTRF("VRCamera: cam FOV -> %.1f (%s)\n", desiredFov,
+                    fovSettings.enabled.load() ? "override" : "XR-matched");
+        }
     }
 
     updateCount_++;

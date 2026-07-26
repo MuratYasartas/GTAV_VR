@@ -583,7 +583,10 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
 
     if (wantAlternate) {
         float eyeSign = (renderEye == VR::Eye::Left) ? -1.0f : 1.0f;
-        services.produceEye(backend->GetDevice(), context, pBuffer, renderEye, eyeSign, true, false);
+        // Angular crop: map the game's ultrawide frustum down to this eye's
+        // XR frustum (angle-true image - the raw full-fill was the "zoomed,
+        // low-res" complaint).
+        services.produceEye(backend->GetDevice(), context, pBuffer, renderEye, eyeSign, true, false, true);
     } else {
         // Mono fallback (camera unresolved): ONE aspect-fitted blit into the
         // left eye texture, which is then submitted for BOTH eyes - so both
@@ -593,7 +596,7 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         // non-AER path (camera ready but loading/menu) keeps full-fill.
         services.produceEye(backend->GetDevice(), context, pBuffer,
                             VR::Eye::Left, 0.0f, monoFallbackCopyBothEyes,
-                            monoFallbackCopyBothEyes);
+                            monoFallbackCopyBothEyes, false);
         if (!monoFallbackCopyBothEyes && services.renderRightEye) {
             services.renderRightEye(backend->GetDevice(), context, pBuffer,
                                     wantReprojection && depthReady);

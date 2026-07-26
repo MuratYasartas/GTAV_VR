@@ -190,10 +190,10 @@ namespace VRMgr {
     };
 
     struct BlitParams {
-        float u_image_scale;
+        float u_scale_x;
+        float u_scale_y;
         float u_offset_x;
         float u_offset_y;
-        float padding;
     };
 
     struct VignetteParams {
@@ -509,10 +509,10 @@ VSOut main(uint id : SV_VertexID)
     static const char* kBlitShader = R"(
 cbuffer BlitParams : register(b0)
 {
-    float u_image_scale;
+    float u_scale_x;
+    float u_scale_y;
     float u_offset_x;
     float u_offset_y;
-    float u_padding;
 };
 
 cbuffer VignetteParams : register(b1)
@@ -527,10 +527,12 @@ SamplerState g_sampler : register(s0);
 
 float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
 {
+    // Anisotropic scale: >1 zooms into the center subregion on that axis
+    // (angular crop - the AER path maps the game's ultrawide frustum down to
+    // the per-eye XR frustum, which needs different X/Y factors).
     float2 uv = tex;
-    float scale = max(u_image_scale, 0.01);
-    uv = (uv - 0.5f) / scale + 0.5f;
-    uv += float2(u_offset_x, u_offset_y);
+    uv.x = (uv.x - 0.5f) / max(u_scale_x, 0.01f) + 0.5f + u_offset_x;
+    uv.y = (uv.y - 0.5f) / max(u_scale_y, 0.01f) + 0.5f + u_offset_y;
 
     float4 color = g_color.Sample(g_sampler, uv);
     if (u_vignette_enabled > 0.5f) {
@@ -939,21 +941,55 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
     }
 
     static void UpdateBlitParams(ID3D11DeviceContext* context,
-                                 float eyeSign,
-                                 bool useUserAlignment = true) {
+                                 float scaleX,
+                                 float scaleY,
+                                 float offsetX,
+                                 float offsetY) {
         if (!blit_constant_buffer_ || !context) {
             return;
         }
 
         BlitParams params = {};
-        float scale = 1.0f;
-        float offsetX = 0.0f;
-        float offsetY = 0.0f;
-        GetImageTransform(eyeSign, scale, offsetX, offsetY, useUserAlignment);
-        params.u_image_scale = scale;
+        params.u_scale_x = scaleX;
+        params.u_scale_y = scaleY;
         params.u_offset_x = offsetX;
         params.u_offset_y = offsetY;
         context->UpdateSubresource(blit_constant_buffer_, 0, nullptr, &params, 0, 0);
+    }
+
+    // Angular crop factors for the AER path: the game renders its (ultrawide)
+    // frustum with vertical FOV = RuntimeStats.activeFov; each eye must show
+    // only the central sub-frustum matching the XR per-eye FOV. Returned
+    // factors are >= 1 (zoom into the center subregion) for the blit shader.
+    static void ComputeAngularCrop(uint32_t srcWidth,
+                                   uint32_t srcHeight,
+                                   float eyeSign,
+                                   float& outCropX,
+                                   float& outCropY) {
+        outCropX = 1.0f;
+        outCropY = 1.0f;
+        const float vfovB = VR::GetRuntimeStats().activeFov.load();
+        VR::IVRBackend* backend = GetBackend();
+        if (vfovB <= 1.0f || !backend || srcHeight == 0) {
+            return;
+        }
+        constexpr float kDegToRad = 0.01745329251994329577f;
+        const float tanVb = tanf(vfovB * kDegToRad * 0.5f);
+        const float tanHb = tanVb * static_cast<float>(srcWidth) /
+                            static_cast<float>(srcHeight);
+        const VR::Eye eye = (eyeSign < 0.0f) ? VR::Eye::Left : VR::Eye::Right;
+        const DirectX::XMMATRIX proj = backend->GetProjectionMatrix(eye, 0.1f, 100.0f);
+        const float m00 = proj.r[0].m128_f32[0];
+        const float m11 = proj.r[1].m128_f32[1];
+        if (m00 < 0.01f || m11 < 0.01f) {
+            return;
+        }
+        outCropX = tanHb * m00;  // tan(hfovB/2) / tan(hfovE/2)
+        outCropY = tanVb * m11;  // tan(vfovB/2) / tan(vfovE/2)
+        // scale < 1 would sample outside the backbuffer (game FOV narrower
+        // than XR FOV): clamp, accepting the resulting over-zoom.
+        outCropX = (std::max)(1.0f, outCropX);
+        outCropY = (std::max)(1.0f, outCropY);
     }
 
     static void ApplyBlitStates(ID3D11DeviceContext* context) {
@@ -1084,7 +1120,8 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                            ID3D11RenderTargetView* target,
                            float eyeSign,
                            bool useUserAlignment = true,
-                           bool aspectFit = false) {
+                           bool aspectFit = false,
+                           bool angularCrop = false) {
         if (!device || !context || !source || !target || !blit_pixel_shader_) {
             return;
         }
@@ -1190,7 +1227,29 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
 
         context->OMSetRenderTargets(1, &target, nullptr);
         ApplyBlitStates(context);
-        UpdateBlitParams(context, eyeSign, useUserAlignment);
+        {
+            // User alignment (imageScale zoom + fine offsets), then the
+            // angular crop on top for the AER path.
+            float scaleX = 1.0f;
+            float offsetX = 0.0f;
+            float offsetY = 0.0f;
+            GetImageTransform(eyeSign, scaleX, offsetX, offsetY, useUserAlignment);
+            float scaleY = scaleX;
+            if (angularCrop) {
+                float cropX = 1.0f;
+                float cropY = 1.0f;
+                ComputeAngularCrop(srcDesc.Width, srcDesc.Height, eyeSign, cropX, cropY);
+                scaleX *= cropX;
+                scaleY *= cropY;
+            }
+            UpdateBlitParams(context, scaleX, scaleY, offsetX, offsetY);
+        }
+        // Never leave stale content in uncovered areas (shows as smeared
+        // "not rendered" artifacts around the image, reported live).
+        {
+            const float kOpaqueBlack[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            context->ClearRenderTargetView(target, kOpaqueBlack);
+        }
         context->VSSetShader(stereo_vertex_shader_, nullptr, 0);
         context->PSSetShader(blit_pixel_shader_, nullptr, 0);
         if (blit_constant_buffer_) {
@@ -1377,12 +1436,141 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                                          VR::Eye eye,
                                          float eyeSign,
                                          bool useUserAlignment,
-                                         bool aspectFit) {
+                                         bool aspectFit,
+                                         bool angularCrop) {
         if (blit_pixel_shader_) {
-            RenderBlit(device, context, pBuffer, hmdRenderer->GetEyeRenderTarget(eye), eyeSign, useUserAlignment, aspectFit);
+            RenderBlit(device, context, pBuffer, hmdRenderer->GetEyeRenderTarget(eye), eyeSign, useUserAlignment, aspectFit, angularCrop);
         } else {
             hmdRenderer->Render(eye, pBuffer);
         }
+    }
+
+    // --- F12 debug dump ("see what the user sees") ---------------------------
+
+    // Write a 24-bit BMP (bottom-up, BGR rows) from an 8-bit 4-channel buffer.
+    static bool WriteBmp24(const wchar_t* path, const uint8_t* data,
+                           uint32_t width, uint32_t height, uint32_t rowPitch,
+                           bool swapRB) {
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, path, L"wb") != 0 || !f) return false;
+        const uint32_t rowBytes = width * 3;
+        const uint32_t rowPadded = (rowBytes + 3u) & ~3u;
+        const uint32_t imageSize = rowPadded * height;
+#pragma pack(push, 1)
+        struct BmpHeader {
+            char sig[2]; uint32_t fileSize; uint32_t reserved; uint32_t dataOffset;
+            uint32_t infoSize; int32_t width; int32_t height;
+            uint16_t planes; uint16_t bpp; uint32_t compression; uint32_t imageSize;
+            int32_t xPpm; int32_t yPpm; uint32_t colorsUsed; uint32_t colorsImportant;
+        };
+#pragma pack(pop)
+        BmpHeader h = {};
+        h.sig[0] = 'B'; h.sig[1] = 'M';
+        h.fileSize = sizeof(h) + imageSize;
+        h.dataOffset = sizeof(h);
+        h.infoSize = 40;
+        h.width = static_cast<int32_t>(width);
+        h.height = static_cast<int32_t>(height);
+        h.planes = 1;
+        h.bpp = 24;
+        h.imageSize = imageSize;
+        fwrite(&h, 1, sizeof(h), f);
+        uint8_t* row = static_cast<uint8_t*>(malloc(rowPadded));
+        for (int32_t y = static_cast<int32_t>(height) - 1; y >= 0; --y) {
+            const uint8_t* src = data + static_cast<size_t>(y) * rowPitch;
+            for (uint32_t x = 0; x < width; ++x) {
+                const uint8_t* p = src + static_cast<size_t>(x) * 4;
+                row[x * 3 + 0] = swapRB ? p[2] : p[0];
+                row[x * 3 + 1] = p[1];
+                row[x * 3 + 2] = swapRB ? p[0] : p[2];
+            }
+            memset(row + rowBytes, 0, rowPadded - rowBytes);
+            fwrite(row, 1, rowPadded, f);
+        }
+        free(row);
+        fclose(f);
+        return true;
+    }
+
+    static bool DumpTextureToBmp(ID3D11Device* device, ID3D11DeviceContext* context,
+                                 ID3D11Texture2D* tex, const wchar_t* path) {
+        D3D11_TEXTURE2D_DESC desc = {};
+        tex->GetDesc(&desc);
+        bool bgra = true;
+        switch (desc.Format) {
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+            bgra = true; break;
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            bgra = false; break;
+        default:
+            LOGSTRF("D3DHooks_VRManager: dump skipped, unsupported fmt %u\n", desc.Format);
+            return false;
+        }
+        D3D11_TEXTURE2D_DESC sd = desc;
+        sd.Usage = D3D11_USAGE_STAGING;
+        sd.BindFlags = 0;
+        sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        sd.MiscFlags = 0;
+        sd.SampleDesc.Count = 1;
+        sd.SampleDesc.Quality = 0;
+        ID3D11Texture2D* staging = nullptr;
+        if (FAILED(device->CreateTexture2D(&sd, nullptr, &staging)) || !staging) return false;
+        context->CopyResource(staging, tex);
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        bool ok = false;
+        if (SUCCEEDED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+            ok = WriteBmp24(path, static_cast<const uint8_t*>(mapped.pData),
+                            desc.Width, desc.Height, mapped.RowPitch, !bgra);
+            context->Unmap(staging, 0);
+        }
+        staging->Release();
+        return ok;
+    }
+
+    static void DumpEyeDebugTextures(IDXGISwapChain* pSwapChain) {
+        VR::IVRBackend* backend = GetBackend();
+        if (!backend || !hmdRenderer) return;
+        ID3D11Device* device = backend->GetDevice();
+        if (!device) return;
+        ID3D11DeviceContext* context = nullptr;
+        device->GetImmediateContext(&context);
+        if (!context) return;
+
+        wchar_t dir[MAX_PATH];
+        if (GetTempPathW(MAX_PATH, dir) == 0) {
+            context->Release();
+            return;
+        }
+        wcscat_s(dir, L"gtavr_dump");
+        CreateDirectoryW(dir, nullptr);
+
+        static uint32_t dumpIndex = 0;
+        dumpIndex++;
+
+        ID3D11Texture2D* back = nullptr;
+        if (SUCCEEDED(pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D),
+                                            reinterpret_cast<void**>(&back))) && back) {
+            wchar_t path[MAX_PATH];
+            swprintf_s(path, L"%s\\backbuffer_%03u.bmp", dir, dumpIndex);
+            DumpTextureToBmp(device, context, back, path);
+            back->Release();
+        }
+        for (int e = 0; e < 2; ++e) {
+            ID3D11Texture2D* tex = hmdRenderer->GetEyeTexture(e == 0 ? VR::Eye::Left : VR::Eye::Right);
+            if (!tex) continue;
+            wchar_t path[MAX_PATH];
+            swprintf_s(path, L"%s\\eye_%s_%03u.bmp", dir, e == 0 ? L"L" : L"R", dumpIndex);
+            DumpTextureToBmp(device, context, tex, path);
+        }
+        context->Release();
+        LOGSTRF("D3DHooks_VRManager: F12 dump #%u written to %ls\n", dumpIndex, dir);
     }
 
     // Produce the right eye from the same backbuffer: depth-displaced when
@@ -2033,6 +2221,18 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         services.updateOverlay = &UpdateOverlayOpenVRAndRecenter;
 
         HRESULT result = Stereo::StereoEngine::Get().OnPresent(pSwapChain, SyncInterval, Flags, services);
+
+        // F12 debug dump: save the backbuffer + both eye textures as BMPs so
+        // the submitted image can be inspected without a headset ("see what
+        // the user sees"). Edge-triggered, one dump per keypress.
+        {
+            static bool prevF12 = false;
+            const bool f12Down = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
+            if (f12Down && !prevF12) {
+                DumpEyeDebugTextures(pSwapChain);
+            }
+            prevF12 = f12Down;
+        }
 
         // Device-lost/removed: log once, release everything, allow one clean
         // re-init on the next frame; the frame itself passes through.
