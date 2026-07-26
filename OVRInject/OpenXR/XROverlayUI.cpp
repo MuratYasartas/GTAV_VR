@@ -610,7 +610,7 @@ void XROverlayUI::RenderWorldSettings() {
     };
 
     // X Offset with finer 0.01 step and +/- buttons
-    if (ImGui::SliderFloat("X Offset", &settings_.cameraOffsetX, -1.0f, 1.0f, "%.2f")) {
+    if (ImGui::SliderFloat("X Offset", &settings_.cameraOffsetX, -1.0f, 1.0f, "%.3f")) {
         // Snap to 0.01 step for fine control
         float snapped = snapToStep(settings_.cameraOffsetX, 0.01f);
         if (std::fabs(snapped - settings_.cameraOffsetX) > 0.0001f) {
@@ -621,7 +621,7 @@ void XROverlayUI::RenderWorldSettings() {
     changed |= nudgeButtons("xoffset", settings_.cameraOffsetX, 0.01f, -1.0f, 1.0f);
 
     // Y Offset with finer 0.01 step and +/- buttons
-    if (ImGui::SliderFloat("Y Offset", &settings_.cameraOffsetY, -1.0f, 1.0f, "%.2f")) {
+    if (ImGui::SliderFloat("Y Offset", &settings_.cameraOffsetY, -1.0f, 1.0f, "%.3f")) {
         // Snap to 0.01 step for fine control
         float snapped = snapToStep(settings_.cameraOffsetY, 0.01f);
         if (std::fabs(snapped - settings_.cameraOffsetY) > 0.0001f) {
@@ -632,7 +632,7 @@ void XROverlayUI::RenderWorldSettings() {
     changed |= nudgeButtons("yoffset", settings_.cameraOffsetY, 0.01f, -1.0f, 1.0f);
 
     // Z Offset with +/- buttons
-    changed |= ImGui::SliderFloat("Z Offset", &settings_.cameraOffsetZ, -1.0f, 1.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Z Offset", &settings_.cameraOffsetZ, -1.0f, 1.0f, "%.3f");
     changed |= nudgeButtons("zoffset", settings_.cameraOffsetZ, 0.01f, -1.0f, 1.0f);
 
     ImGui::Separator();
@@ -670,21 +670,21 @@ void XROverlayUI::RenderWorldSettings() {
     ImGui::Separator();
     ImGui::Text("Image Alignment");
     constexpr float kImageStep = 0.01f;
-    bool offsetXChanged = ImGui::SliderFloat("Stereo Offset X", &settings_.imageOffsetX, -1000.0f, 1000.0f, "%.2f");
+    bool offsetXChanged = ImGui::SliderFloat("Stereo Offset X", &settings_.imageOffsetX, -1.0f, 1.0f, "%.3f");
     offsetXChanged |= nudgeButtons("StereoOffsetX", settings_.imageOffsetX, kImageStep, -1000.0f, 1000.0f);
     if (offsetXChanged) {
         settings_.imageOffsetX = clampValue(snapToStep(settings_.imageOffsetX, kImageStep), -1000.0f, 1000.0f);
         changed = true;
     }
 
-    bool offsetYChanged = ImGui::SliderFloat("Stereo Offset Y", &settings_.imageOffsetY, -1000.0f, 1000.0f, "%.2f");
+    bool offsetYChanged = ImGui::SliderFloat("Stereo Offset Y", &settings_.imageOffsetY, -1.0f, 1.0f, "%.3f");
     offsetYChanged |= nudgeButtons("StereoOffsetY", settings_.imageOffsetY, kImageStep, -1000.0f, 1000.0f);
     if (offsetYChanged) {
         settings_.imageOffsetY = clampValue(snapToStep(settings_.imageOffsetY, kImageStep), -1000.0f, 1000.0f);
         changed = true;
     }
 
-    bool scaleChanged = ImGui::SliderFloat("Image Scale (FOV)", &settings_.imageScale, 0.01f, 100.0f, "%.2f");
+    bool scaleChanged = ImGui::SliderFloat("Image Scale (FOV)", &settings_.imageScale, 0.25f, 4.0f, "%.2f");
     scaleChanged |= nudgeButtons("ImageScale", settings_.imageScale, kImageStep, 0.01f, 100.0f);
     if (scaleChanged) {
         settings_.imageScale = clampValue(snapToStep(settings_.imageScale, kImageStep), 0.01f, 100.0f);
@@ -870,7 +870,7 @@ void XROverlayUI::RenderPerformanceSettings() {
         ImGui::TextDisabled("Informational on OpenXR: the runtime manages reprojection itself.");
     }
 
-    changed |= ImGui::SliderFloat("Render Scale", &settings_.renderScale, 0.5f, 2.0f, "%.1f");
+    changed |= ImGui::SliderFloat("Render Scale", &settings_.renderScale, 0.5f, 2.0f, "%.2f");
     ImGui::SetItemTooltip("Adjust render resolution (lower = better performance, higher = sharper)");
     ImGui::BeginDisabled();
     ImGui::SliderFloat("Game Resolution Scale", &settings_.gameResolutionScale, 0.5f, 2.0f, "%.2f");
