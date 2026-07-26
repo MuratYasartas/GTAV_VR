@@ -657,6 +657,16 @@ void XRHMDSupport::UpdateControllers() {
 // View Information
 //-----------------------------------------------------------------------------
 
+uint32_t XRHMDSupport::GetRawRecommendedWidth() const {
+    if (!view_manager_) return 1920;
+    return view_manager_->GetRecommendedWidth();
+}
+
+uint32_t XRHMDSupport::GetRawRecommendedHeight() const {
+    if (!view_manager_) return 1080;
+    return view_manager_->GetRecommendedHeight();
+}
+
 uint32_t XRHMDSupport::GetRecommendedWidth() const {
     if (swapchain_width_ > 0) {
         return swapchain_width_;

@@ -159,6 +159,8 @@ public:
      * Get recommended render width for a single eye
      */
     OVR_API uint32_t GetRecommendedWidth() const;
+    OVR_API uint32_t GetRawRecommendedWidth() const;
+    OVR_API uint32_t GetRawRecommendedHeight() const;
 
     /**
      * Get recommended render height for a single eye

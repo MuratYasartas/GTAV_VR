@@ -147,8 +147,8 @@ void HMDRenderer::Initialize()
 		LOGSTR("HMDRenderer: Using injected immediate context\n");
 	}
 
-	uint32_t baseWidth = backend_->GetRecommendedWidth();
-	uint32_t baseHeight = backend_->GetRecommendedHeight();
+	uint32_t baseWidth = backend_->GetRawRecommendedWidth();
+	uint32_t baseHeight = backend_->GetRawRecommendedHeight();
 	LOGSTRF("HMDRenderer: Backend recommended size %ux%u\n", baseWidth, baseHeight);
 	uint32_t eyeWidth = 0;
 	uint32_t eyeHeight = 0;
@@ -229,8 +229,8 @@ void HMDRenderer::Resize(float render_scale)
 	float effectiveScale = render_scale;
 	if (backend_) {
 		effectiveScale = VR::ComputeSafeRenderScale(render_scale,
-			backend_->GetRecommendedWidth(),
-			backend_->GetRecommendedHeight());
+			backend_->GetRawRecommendedWidth(),
+			backend_->GetRawRecommendedHeight());
 	}
 	if (std::fabs(effectiveScale - render_scale_) < 0.001f) {
 		return;

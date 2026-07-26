@@ -11,8 +11,11 @@ namespace VR {
 constexpr float kDefaultRenderScale = 1.0f;
 constexpr float kMinRequestedRenderScale = 0.5f;
 constexpr float kMaxRequestedRenderScale = 2.0f;
-constexpr uint32_t kMaxEyeTextureDimension = 4096u;
-constexpr uint64_t kMaxEyeTexturePixels = 16ull * 1024ull * 1024ull;
+// Eye-texture caps: high enough to never clamp below the HMD's own
+// recommended resolution (Pimax Crystal Super: 5424x5356) on capable GPUs -
+// the renderScale slider must reach full PPD when the user asks for it.
+constexpr uint32_t kMaxEyeTextureDimension = 8192u;
+constexpr uint64_t kMaxEyeTexturePixels = 48ull * 1024ull * 1024ull;
 
 inline float ClampRequestedRenderScale(float scale) {
     if (!std::isfinite(scale)) {

@@ -252,6 +252,16 @@ uint32_t OpenXRBackend::GetRecommendedHeight() const {
     return hmd_support_->GetRecommendedHeight();
 }
 
+uint32_t OpenXRBackend::GetRawRecommendedWidth() const {
+    if (!hmd_support_) return 1920;
+    return hmd_support_->GetRawRecommendedWidth();
+}
+
+uint32_t OpenXRBackend::GetRawRecommendedHeight() const {
+    if (!hmd_support_) return 1080;
+    return hmd_support_->GetRawRecommendedHeight();
+}
+
 XMMATRIX OpenXRBackend::GetProjectionMatrix(Eye eye, float nearZ, float farZ) const {
     if (!hmd_support_) return XMMatrixIdentity();
 

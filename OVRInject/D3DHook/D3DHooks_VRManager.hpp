@@ -2413,6 +2413,39 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
     ) {
         LOGSTRF("D3DHooks_VRManager: D3D11CreateDeviceAndSwapChain called\n");
 
+        // EXPERIMENTAL game-render-scale override (%TEMP%\gtavr_backbuffer_
+        // scale.txt, e.g. 1.5): multiply the swapchain backbuffer size at
+        // creation time - the only point where an external override is legal
+        // (post-creation ResizeBuffers is rejected by DXGI). Requires the
+        // dxgi shim so this proxy runs before the game's device creation.
+        // UNVERIFIED whether RAGE renders bigger into the larger buffer.
+        DXGI_SWAP_CHAIN_DESC scaledDesc = {};
+        if (pSwapChainDesc) {
+            char tmpPath[MAX_PATH];
+            float bbScale = 0.0f;
+            if (GetTempPathA(MAX_PATH, tmpPath) > 0) {
+                strncat_s(tmpPath, "gtavr_backbuffer_scale.txt", _TRUNCATE);
+                FILE* sf = nullptr;
+                if (fopen_s(&sf, tmpPath, "r") == 0 && sf) {
+                    char buf[16] = {};
+                    if (fgets(buf, sizeof(buf), sf)) {
+                        bbScale = static_cast<float>(atof(buf));
+                    }
+                    fclose(sf);
+                }
+            }
+            if (bbScale > 1.01f) {
+                scaledDesc = *pSwapChainDesc;
+                scaledDesc.BufferDesc.Width = static_cast<UINT>(pSwapChainDesc->BufferDesc.Width * bbScale + 0.5f);
+                scaledDesc.BufferDesc.Height = static_cast<UINT>(pSwapChainDesc->BufferDesc.Height * bbScale + 0.5f);
+                LOGSTRF("D3DHooks_VRManager: game render scale %.2f - swapchain %ux%u -> %ux%u (EXPERIMENTAL)\n",
+                        bbScale,
+                        pSwapChainDesc->BufferDesc.Width, pSwapChainDesc->BufferDesc.Height,
+                        scaledDesc.BufferDesc.Width, scaledDesc.BufferDesc.Height);
+                pSwapChainDesc = &scaledDesc;
+            }
+        }
+
         HRESULT result = ((PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)Original_D3D11CreateDeviceAndSwapChain)(
             pAdapter,
             DriverType,
@@ -2449,6 +2482,38 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                                             IUnknown* pDevice,
                                             DXGI_SWAP_CHAIN_DESC* pDesc,
                                             IDXGISwapChain** ppSwapChain) {
+        // Same game-render-scale override as Proxy_D3D11CreateDeviceAndSwap
+        // Chain (games that create device+swapchain separately take this
+        // path). Guard against double-scaling when both hooks fire for the
+        // same creation: the D3D11 wrapper hook already scaled the desc.
+        if (pDesc) {
+            static uint32_t lastScaledW = 0;
+            static uint32_t lastScaledH = 0;
+            char tmpPath[MAX_PATH];
+            float bbScale = 0.0f;
+            if (GetTempPathA(MAX_PATH, tmpPath) > 0) {
+                strncat_s(tmpPath, "gtavr_backbuffer_scale.txt", _TRUNCATE);
+                FILE* sf = nullptr;
+                if (fopen_s(&sf, tmpPath, "r") == 0 && sf) {
+                    char buf[16] = {};
+                    if (fgets(buf, sizeof(buf), sf)) {
+                        bbScale = static_cast<float>(atof(buf));
+                    }
+                    fclose(sf);
+                }
+            }
+            if (bbScale > 1.01f &&
+                !(pDesc->BufferDesc.Width == lastScaledW && pDesc->BufferDesc.Height == lastScaledH)) {
+                uint32_t origW = pDesc->BufferDesc.Width;
+                uint32_t origH = pDesc->BufferDesc.Height;
+                pDesc->BufferDesc.Width = static_cast<UINT>(origW * bbScale + 0.5f);
+                pDesc->BufferDesc.Height = static_cast<UINT>(origH * bbScale + 0.5f);
+                lastScaledW = pDesc->BufferDesc.Width;
+                lastScaledH = pDesc->BufferDesc.Height;
+                LOGSTRF("D3DHooks_VRManager: game render scale %.2f - CreateSwapChain %ux%u -> %ux%u (EXPERIMENTAL)\n",
+                        bbScale, origW, origH, lastScaledW, lastScaledH);
+            }
+        }
         HRESULT result = Original_CreateSwapChainHook(pFactory, pDevice, pDesc, ppSwapChain);
         if (SUCCEEDED(result) && ppSwapChain && *ppSwapChain && pDevice) {
             // Only D3D11-device swapchains are interesting; anything else

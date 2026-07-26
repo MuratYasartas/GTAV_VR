@@ -44,6 +44,8 @@ public:
 
     uint32_t GetRecommendedWidth() const override;
     uint32_t GetRecommendedHeight() const override;
+    uint32_t GetRawRecommendedWidth() const override;
+    uint32_t GetRawRecommendedHeight() const override;
     XMMATRIX GetProjectionMatrix(Eye eye, float nearZ, float farZ) const override;
     XMMATRIX GetViewMatrix(Eye eye) const override;
 

@@ -230,6 +230,15 @@ public:
     virtual uint32_t GetRecommendedHeight() const = 0;
 
     /**
+     * Raw runtime-recommended size (unclamped, independent of the current
+     * swapchain). Eye-texture sizing must use this SAME base as the XR
+     * swapchain sizing, otherwise the two drift to different sizes and the
+     * submit copy crops (the "renderScale deforms the image" bug).
+     */
+    virtual uint32_t GetRawRecommendedWidth() const { return GetRecommendedWidth(); }
+    virtual uint32_t GetRawRecommendedHeight() const { return GetRecommendedHeight(); }
+
+    /**
      * Get projection matrix for an eye
      * @param nearZ Near clip plane
      * @param farZ Far clip plane
