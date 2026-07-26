@@ -138,6 +138,33 @@ namespace VRMgr {
     // Initialize() idempotency guard.
     std::atomic<bool> initialize_started_{false};
     HWND game_window_ = nullptr;
+
+    // WndProc hook state for overlay input blocking.
+    WNDPROC original_wndproc_ = nullptr;
+
+    static bool ShouldSwallowInput(UINT msg) {
+        switch (msg) {
+        case WM_INPUT:
+        case WM_KEYDOWN: case WM_KEYUP:
+        case WM_SYSKEYDOWN: case WM_SYSKEYUP:
+        case WM_CHAR: case WM_SYSCHAR:
+        case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+        case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+        case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+        case WM_XBUTTONDOWN: case WM_XBUTTONUP: case WM_XBUTTONDBLCLK:
+        case WM_MOUSEMOVE: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static LRESULT CALLBACK GameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+        if (VR::GetRuntimeStats().overlayVisible.load() && ShouldSwallowInput(msg)) {
+            return true; // overlay owns the input while visible
+        }
+        return CallWindowProcA(original_wndproc_, hwnd, msg, wParam, lParam);
+    }
     // desktopMirrorSyncOverride=1 (gtavr_settings.ini [Performance]) or
     // GTAVR_DESKTOP_MIRROR_SYNC0=1 forces the desktop mirror Present sync
     // interval to 0. Default (0) preserves the game's own sync interval.
@@ -1585,6 +1612,17 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             game_window_ = windowDesc.OutputWindow;
         }
 
+        // WndProc hook: while the settings overlay is visible, swallow
+        // game-bound input (raw input, keys, mouse) so menu interactions do
+        // not leak into the game. GTA V reads input via WM_INPUT, so that
+        // message must be swallowed too - swallowing keys alone is not enough.
+        if (game_window_ && !original_wndproc_) {
+            original_wndproc_ = reinterpret_cast<WNDPROC>(SetWindowLongPtrA(
+                game_window_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&GameWndProc)));
+            LOGSTRF("D3DHooks_VRManager: WndProc hook installed on %p (input blocked while overlay visible)\n",
+                    game_window_);
+        }
+
         ID3D11Device* device = nullptr;
         if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&device)) || !device) {
             LOGSTR("D3DHooks_VRManager: Failed to get D3D11 device from swapchain.\n");
@@ -2453,6 +2491,11 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             return; // already torn down
         }
         LOGSTR("D3DHooks_VRManager: Uninstalling hooks (DLL unload)\n");
+
+        if (original_wndproc_ && game_window_) {
+            SetWindowLongPtrA(game_window_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(original_wndproc_));
+            original_wndproc_ = nullptr;
+        }
 
         if (watchdog_thread_) {
             WaitForSingleObject(watchdog_thread_, 2000);

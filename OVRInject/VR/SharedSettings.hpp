@@ -218,6 +218,10 @@ struct RuntimeStats {
     std::atomic<int> activeFovOffset{0};
     std::atomic<float> activeFov{0.0f};
     std::atomic<int> activeRuntime{0};
+    // True while the settings overlay is visible: the WndProc hook swallows
+    // game-bound input (WM_INPUT, keys, mouse) so menu interactions don't
+    // leak into the game (and vice versa).
+    std::atomic<bool> overlayVisible{false};
 };
 
 inline ReprojectionSettings& GetReprojectionSettings() {

@@ -1988,6 +1988,37 @@ void GtaCameraHook::WriteCameraMatrix(const XMMATRIX& rotation, const XMFLOAT4& 
 
     write_success_count_++;
 
+    // DIAG (temporary, decisive): does our write survive until the next one?
+    // Every ~300 writes, read back what the address contains BEFORE we write
+    // it again. If the game rewrote its own values over ours, the write race
+    // is lost and the ViewInverse-style patch is required; if ours persists,
+    // the renderer must be reading a DIFFERENT camera object.
+    {
+        static GtaCameraMatrix lastWritten = {};
+        static bool haveLastWritten = false;
+        if (haveLastWritten && (write_success_count_ % 300 == 0)) {
+            GtaCameraMatrix current = {};
+            if (SafeRead(address, &current, sizeof(current))) {
+                const float* a = reinterpret_cast<const float*>(&current);
+                const float* b = reinterpret_cast<const float*>(&lastWritten);
+                float diff = 0.0f;
+                for (int i = 0; i < 16; ++i) diff += fabsf(a[i] - b[i]);
+                LOGSTRF("GtaCameraHook: DIAG readback diff=%.3f -> %s\n", diff,
+                        diff > 0.5f ? "GAME OVERWRITES our matrix (race lost)" : "our matrix persists (renderer reads elsewhere)");
+            }
+        }
+        if (write_success_count_ % 2000 == 0 && camera_fov_.load()) {
+            uintptr_t activeCam = camera_fov_.load()->GetActiveCameraAddress();
+            uintptr_t ourBase = address - static_cast<uintptr_t>(config_.matrixOffset);
+            LOGSTRF("GtaCameraHook: DIAG director activeCam=0x%p, our camBase=0x%p (matrix 0x%p) -> %s\n",
+                    reinterpret_cast<void*>(activeCam), reinterpret_cast<void*>(ourBase),
+                    reinterpret_cast<void*>(address),
+                    (activeCam && activeCam == ourBase) ? "MATCH" : "MISMATCH");
+        }
+        lastWritten = newMatrix;
+        haveLastWritten = true;
+    }
+
     // Debug logging every ~5 seconds
     if (write_success_count_ % 300 == 1) {
         LOGSTRF("GtaCameraHook: Write #%u - pos=(%.1f, %.1f, %.1f)\n",

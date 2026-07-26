@@ -355,9 +355,11 @@ void XROverlayUI::SetVisible(bool visible) {
         return;
     }
     visible_ = visible;
+    VR::GetRuntimeStats().overlayVisible.store(visible);
     UpdateMouseCapture(visible_);
 #else
     visible_ = visible;
+    VR::GetRuntimeStats().overlayVisible.store(visible);
 #endif
 }
 
