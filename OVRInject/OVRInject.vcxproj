@@ -170,6 +170,8 @@
     <ClInclude Include="Game\GtaGameState.hpp" />
     <ClInclude Include="Game\OnlineGuard.hpp" />
     <ClInclude Include="Game\PatternScanner.hpp" />
+    <ClInclude Include="Game\ShvNatives.hpp" />
+    <ClInclude Include="Game\VRCamera.hpp" />
     <ClInclude Include="Log.hpp" />
     <ClInclude Include="Overlay\OpenVROverlaySurface.hpp" />
     <ClInclude Include="Overlay\OverlaySurface.hpp" />
@@ -209,6 +211,8 @@
     <ClCompile Include="Game\GtaGameState.cpp" />
     <ClCompile Include="Game\OnlineGuard.cpp" />
     <ClCompile Include="Game\PatternScanner.cpp" />
+    <ClCompile Include="Game\ShvNatives.cpp" />
+    <ClCompile Include="Game\VRCamera.cpp" />
     <ClCompile Include="dllmain.cpp">
       <CompileAsManaged Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</CompileAsManaged>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">

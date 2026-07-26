@@ -1,0 +1,262 @@
+// GTAVRBridge.asi - ScriptHookV bridge plugin for the GTAVR VR mod.
+//
+// Loaded by the ASI loader (dinput8.dll) from the game dir, which also loads
+// ScriptHookV.dll through the import chain - so ScriptHookV initializes
+// properly (direct LoadLibrary injection never completes init). This plugin
+// owns a script thread on the game's main thread and exposes a named
+// shared-memory channel ("GTAVR_SHV_BRIDGE") that OVRInject.dll uses to:
+//   - read a continuously updated camera snapshot (coord/rot/fov/relH/relP),
+//   - queue native control ops (yaw/pitch, scripted camera control).
+//
+// Keep it dependency-free (CRT + Windows only) - the 2017 NativeTrainer.asi
+// killed game boots on this build, so this plugin stays minimal and careful.
+
+#include <Windows.h>
+#include <cstdio>
+#include <cstdint>
+#include <atomic>
+
+#include "main.h"
+
+#define GTAVR_BRIDGE_MAGIC 0x47534856u // 'GSHV'
+#define GTAVR_BRIDGE_MAPPING "GTAVR_SHV_BRIDGE"
+
+struct BridgeOp {
+    uint32_t type;
+    int32_t cam;
+    float a, b, c;
+};
+
+struct BridgeState {
+    uint32_t magic;
+    uint32_t stateSeq;
+    float coord[3];
+    float rot[3];
+    float fov;
+    float relHeading;
+    float relPitch;
+    uint32_t qHead;
+    uint32_t qTail;
+    int32_t lastCreateResult;
+    uint32_t bridgeAlive;
+    BridgeOp queue[64];
+};
+
+enum OpType : uint32_t {
+    OpSetRawYawPitch = 1,
+    OpSetRelativeHeadingPitch,
+    OpCamCreate,
+    OpCamSetCoord,
+    OpCamSetRot,
+    OpCamSetFov,
+    OpCamSetActive,
+    OpCamRender,
+    OpCamDestroy,
+};
+
+static std::atomic<bool> g_stop{false};
+static FILE* g_log = nullptr;
+
+static void Log(const char* fmt, ...) {
+    if (!g_log) {
+        char tmp[MAX_PATH];
+        DWORD len = GetTempPathA(MAX_PATH, tmp);
+        if (len > 0 && len < MAX_PATH) {
+            strncat_s(tmp, "gtavrBridgeLog.txt", _TRUNCATE);
+            fopen_s(&g_log, tmp, "a");
+        }
+        if (!g_log) return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(g_log, fmt, args);
+    va_end(args);
+    fflush(g_log);
+}
+
+// Native hashes (ThirdParty/scripthook/inc/natives.h, Alexander Blade SDK)
+static constexpr uint64_t H_GET_GAMEPLAY_CAM_COORD = 0x14D6F5678D8F1B37;
+static constexpr uint64_t H_GET_GAMEPLAY_CAM_ROT = 0x837765A25378F0BB;
+static constexpr uint64_t H_GET_GAMEPLAY_CAM_FOV = 0x65019750A0324133;
+static constexpr uint64_t H_GET_GAMEPLAY_CAM_REL_HEADING = 0x743607648ADD4587;
+static constexpr uint64_t H_GET_GAMEPLAY_CAM_REL_PITCH = 0x3A6867B4845BEDA2;
+static constexpr uint64_t H_SET_GAMEPLAY_CAM_REL_HEADING = 0xB4EC2312F4E5B1F1;
+static constexpr uint64_t H_SET_GAMEPLAY_CAM_REL_PITCH = 0x6D0858B8EDFD2B7D;
+static constexpr uint64_t H_SET_GAMEPLAY_CAM_RAW_YAW = 0x103991D4A307D472;
+static constexpr uint64_t H_SET_GAMEPLAY_CAM_RAW_PITCH = 0x759E13EBC1C15C5A;
+static constexpr uint64_t H_CREATE_CAM = 0xC3981DCE61D9E13F;
+static constexpr uint64_t H_SET_CAM_ACTIVE = 0x026FB97D0A425F84;
+static constexpr uint64_t H_SET_CAM_COORD = 0x4D41783FB745E42E;
+static constexpr uint64_t H_SET_CAM_ROT = 0x85973643155D0B07;
+static constexpr uint64_t H_SET_CAM_FOV = 0xB13C14F66A00D047;
+static constexpr uint64_t H_RENDER_SCRIPT_CAMS = 0x07E5B515DB0636FC;
+static constexpr uint64_t H_DESTROY_CAM = 0x865908C81A2C22E9;
+
+static inline void PushFloat(float v) {
+    uint64_t bits = 0;
+    *reinterpret_cast<float*>(&bits) = v;
+    nativePush64(bits);
+}
+
+static inline float CallFloat(uint64_t hash) {
+    nativeInit(hash);
+    uint64_t* r = nativeCall();
+    return r ? *reinterpret_cast<float*>(r) : 0.0f;
+}
+
+static void UpdateSnapshot(BridgeState* s) {
+    // RAGE native Vector3 returns use an 8-byte stride per component
+    // (x@0, y@8, z@16) - confirmed live: a contiguous float3 read yielded
+    // y==0.0 and z==realY (GTAVR session 2026-07-26).
+    nativeInit(H_GET_GAMEPLAY_CAM_COORD);
+    uint64_t* rc = nativeCall();
+    if (rc) {
+        float* f = reinterpret_cast<float*>(rc);
+        s->coord[0] = f[0];
+        s->coord[1] = f[2];
+        s->coord[2] = f[4];
+    }
+    nativeInit(H_GET_GAMEPLAY_CAM_ROT);
+    nativePush64(0);
+    uint64_t* rr = nativeCall();
+    if (rr) {
+        float* f = reinterpret_cast<float*>(rr);
+        s->rot[0] = f[0];
+        s->rot[1] = f[2];
+        s->rot[2] = f[4];
+    }
+    s->fov = CallFloat(H_GET_GAMEPLAY_CAM_FOV);
+    s->relHeading = CallFloat(H_GET_GAMEPLAY_CAM_REL_HEADING);
+    s->relPitch = CallFloat(H_GET_GAMEPLAY_CAM_REL_PITCH);
+    s->stateSeq++;
+}
+
+static void ExecuteOp(BridgeState* s, const BridgeOp& op) {
+    switch (op.type) {
+    case OpSetRawYawPitch:
+        nativeInit(H_SET_GAMEPLAY_CAM_RAW_YAW);
+        PushFloat(op.a);
+        nativeCall();
+        nativeInit(H_SET_GAMEPLAY_CAM_RAW_PITCH);
+        PushFloat(op.b);
+        nativeCall();
+        break;
+    case OpSetRelativeHeadingPitch:
+        nativeInit(H_SET_GAMEPLAY_CAM_REL_HEADING);
+        PushFloat(op.a);
+        nativeCall();
+        nativeInit(H_SET_GAMEPLAY_CAM_REL_PITCH);
+        PushFloat(op.b);
+        PushFloat(op.c);
+        nativeCall();
+        break;
+    case OpCamCreate:
+        nativeInit(H_CREATE_CAM);
+        nativePush64(reinterpret_cast<uint64_t>("DEFAULT_SCRIPTED_CAMERA"));
+        nativePush64(0);
+        s->lastCreateResult = static_cast<int32_t>(*nativeCall());
+        Log("CREATE_CAM -> %d\n", s->lastCreateResult);
+        break;
+    case OpCamSetCoord:
+        nativeInit(H_SET_CAM_COORD);
+        nativePush64(static_cast<uint64_t>(op.cam));
+        PushFloat(op.a);
+        PushFloat(op.b);
+        PushFloat(op.c);
+        nativeCall();
+        break;
+    case OpCamSetRot:
+        nativeInit(H_SET_CAM_ROT);
+        nativePush64(static_cast<uint64_t>(op.cam));
+        PushFloat(op.a);
+        PushFloat(op.b);
+        PushFloat(op.c);
+        nativePush64(2);
+        nativeCall();
+        break;
+    case OpCamSetFov:
+        nativeInit(H_SET_CAM_FOV);
+        nativePush64(static_cast<uint64_t>(op.cam));
+        PushFloat(op.a);
+        nativeCall();
+        break;
+    case OpCamSetActive:
+        nativeInit(H_SET_CAM_ACTIVE);
+        nativePush64(static_cast<uint64_t>(op.cam));
+        nativePush64(op.a != 0.0f ? 1 : 0);
+        nativeCall();
+        break;
+    case OpCamRender:
+        nativeInit(H_RENDER_SCRIPT_CAMS);
+        nativePush64(op.a != 0.0f ? 1 : 0);
+        nativePush64(0);
+        nativePush64(0);
+        nativePush64(1);
+        nativePush64(1);
+        nativeCall();
+        break;
+    case OpCamDestroy:
+        nativeInit(H_DESTROY_CAM);
+        nativePush64(static_cast<uint64_t>(op.cam));
+        nativePush64(1);
+        nativeCall();
+        break;
+    default:
+        break;
+    }
+}
+
+static void ScriptMain() {
+    HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                        0, sizeof(BridgeState), GTAVR_BRIDGE_MAPPING);
+    if (!mapping) {
+        Log("CreateFileMapping failed %lu\n", GetLastError());
+        return;
+    }
+    BridgeState* s = static_cast<BridgeState*>(
+        MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(BridgeState)));
+    if (!s) {
+        Log("MapViewOfFile failed %lu\n", GetLastError());
+        CloseHandle(mapping);
+        return;
+    }
+    ZeroMemory(s, sizeof(*s));
+    s->magic = GTAVR_BRIDGE_MAGIC;
+    s->bridgeAlive = 1;
+    Log("GTAVRBridge: script thread up, channel ready\n");
+
+    uint32_t logTick = 0;
+    while (!g_stop.load()) {
+        UpdateSnapshot(s);
+
+        uint32_t head = s->qHead;
+        while (head != s->qTail) {
+            ExecuteOp(s, s->queue[head % 64]);
+            head = (head + 1) % 64;
+        }
+        s->qHead = head;
+
+        if (++logTick % 240 == 1) {
+            Log("cam coord=(%.1f, %.1f, %.1f) rot=(%.1f, %.1f, %.1f) fov=%.1f relH=%.2f relP=%.2f\n",
+                s->coord[0], s->coord[1], s->coord[2], s->rot[0], s->rot[1], s->rot[2],
+                s->fov, s->relHeading, s->relPitch);
+        }
+        WAIT(0);
+    }
+
+    s->bridgeAlive = 0;
+    UnmapViewOfFile(s);
+    CloseHandle(mapping);
+    Log("GTAVRBridge: stopped\n");
+}
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hModule);
+        scriptRegister(hModule, &ScriptMain);
+    } else if (reason == DLL_PROCESS_DETACH) {
+        g_stop.store(true);
+        scriptUnregister(hModule);
+    }
+    return TRUE;
+}

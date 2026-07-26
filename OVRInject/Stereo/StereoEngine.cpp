@@ -7,6 +7,7 @@
 #include "../Game/BuildManifest.hpp"
 #include "../Game/GtaCameraFov.hpp"
 #include "../Game/GtaCameraHook.hpp"
+#include "../Game/VRCamera.hpp"
 #include "../Game/GtaGameState.hpp"
 #include "../Vive/HMDRenderer.hpp"
 #include "../Overlay/VirtualScreen.hpp"
@@ -447,7 +448,9 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     }
 
     Game::GtaCameraHook* cameraHook = services.cameraHook;
-    bool cameraReady = cameraHook && cameraHook->IsReady();
+    Game::VRCamera* vrCamera = services.vrCamera;
+    const bool vrCameraReady = vrCamera && vrCamera->IsAvailable();
+    bool cameraReady = (cameraHook && cameraHook->IsReady()) || vrCameraReady;
 
     if (services.cameraFov) {
         services.cameraFov->Update(VR::GetFovSettings());
@@ -723,7 +726,20 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     CameraMatrixSnapshot preSnapshot = {};
     bool havePreSnapshot = horizonLock && TryReadGameCameraSnapshot(preSnapshot);
 
-    if (cameraHook) {
+    if (vrCameraReady) {
+        // Scripted-cam path: the bridge executes the queued native ops on the
+        // game main thread before the next render - same ordering contract as
+        // the memory write below (see the write-timing comment above).
+        if (wantAlternate) {
+            vrCamera->Update(static_cast<VR::Eye>(aerPlan.cameraWriteEye), gameState);
+        } else {
+            vrCamera->Update(VR::Eye::Left, gameState);
+        }
+
+        if (stereoSettings.recenterRequested.exchange(false)) {
+            vrCamera->Recenter();
+        }
+    } else if (cameraHook) {
         if (wantAlternate && cameraHook->IsReady()) {
             // The game renders the OTHER eye next frame; write that eye's
             // camera now so it is in place before the next game render.

@@ -56,6 +56,7 @@ namespace Game {
 class GtaCameraHook;
 class GtaCameraFov;
 class GtaGameState;
+class VRCamera;
 }
 
 namespace Stereo {
@@ -70,6 +71,9 @@ struct FrameServices {
     VR::IVRBackend* backend = nullptr;
     HMDRenderer* hmdRenderer = nullptr;
     Game::GtaCameraHook* cameraHook = nullptr;
+    // Scripted-camera path (GTAVRBridge). When available it wins over the
+    // memory-matrix hook (which the b3889 renderer provably does not read).
+    Game::VRCamera* vrCamera = nullptr;
     Game::GtaCameraFov* cameraFov = nullptr;
     Game::GtaGameState* gameState = nullptr;
     VirtualScreen* virtualScreen = nullptr;

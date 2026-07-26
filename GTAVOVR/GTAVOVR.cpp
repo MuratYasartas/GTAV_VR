@@ -772,6 +772,11 @@ int wmain(int argc, wchar_t* argv[]) {
 		}
 	}
 
+	// NOTE: do NOT inject ScriptHookV.dll here. Remote LoadLibrary of
+	// ScriptHookV crashes its init (0xC0000409) - it must be loaded by the
+	// game's own ASI loader chain (dinput8.dll in the game directory).
+	// OVRInject talks to it through the GTAVRBridge .asi shared mapping.
+
 	printf("Injecting %ls into PID %lu...\n", dllPath.c_str(), pid);
 	if (!InjectDll(pid, dllPath)) {
 		printf("Injection failed.\n");

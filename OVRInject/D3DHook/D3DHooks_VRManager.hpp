@@ -38,6 +38,8 @@
 #include "../Overlay/VirtualScreen.hpp"
 #include "../OpenXR/XROverlayUI.hpp"
 #include "../Game/OnlineGuard.hpp"
+#include "../Game/ShvNatives.hpp"
+#include "../Game/VRCamera.hpp"
 #include "../Stereo/StereoEngine.hpp"
 #include "../Stereo/ComfortRuntime.hpp"
 #include "../Stereo/ImageFit.hpp"
@@ -57,6 +59,7 @@ namespace VRMgr {
     VR::VRManager* vrManager = nullptr;
 	HMDRenderer* hmdRenderer = nullptr;
 	Game::GtaCameraHook* cameraHook = nullptr;
+	Game::VRCamera* vrCamera = nullptr;
     std::unique_ptr<Game::GtaCameraFov> cameraFov;
     std::unique_ptr<Game::GtaGameState> gameState;
     std::unique_ptr<VirtualScreen> virtualScreen;
@@ -1572,6 +1575,10 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         // per-frame verdict poll lives at the top of hookedPresent.
         Game::OnlineGuard::Get().Initialize();
 
+        // ScriptHookV bridge (camera natives via the game's main thread).
+        // Best-effort: without it the old matrix-write path stays in use.
+        Game::ShvNatives::Get().Initialize();
+
         // Boot summary: one structured block capturing the environment, so a
         // single log file answers "what was wrong" without guesswork.
         {
@@ -1694,6 +1701,10 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                 LOGSTR("D3DHooks_VRManager: Creating camera hook\n");
                 cameraHook = new Game::GtaCameraHook(backend, cameraFov.get());
                 cameraHook->Hook();
+
+                // Scripted VR camera (bridge channel). Constructed even when
+                // the bridge is absent - IsAvailable() just stays false.
+                vrCamera = new Game::VRCamera(backend);
 
                 // StereoEngine: resolve clip planes, cache the per-eye runtime
                 // projection, sync the runtime IPD into shared settings.
@@ -2004,6 +2015,7 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         services.backend = backend;
         services.hmdRenderer = hmdRenderer;
         services.cameraHook = cameraHook;
+        services.vrCamera = vrCamera;
         services.cameraFov = cameraFov.get();
         services.gameState = gameState.get();
         services.virtualScreen = virtualScreen.get();
@@ -2312,6 +2324,10 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             delete cameraHook;
             cameraHook = nullptr;
         }
+        if (vrCamera) {
+            delete vrCamera;  // destructor releases the scripted cam
+            vrCamera = nullptr;
+        }
 
         if (vrManager && vrManager->IsInitialized()) {
             vrManager->Shutdown();
@@ -2328,7 +2344,8 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         // Phase 8: flush + export gtavr_perf.csv before teardown. Idempotent;
         // also reachable on demand via the F11 hotkey.
         Perf::PerfStats::Get().Shutdown();
-        ReleaseVRResources();
+        ReleaseVRResources();          // deletes vrCamera (releases scripted cam ops)
+        Game::ShvNatives::Get().Shutdown();
         overlay_visible = false;
         using_openvr = false;
     }
