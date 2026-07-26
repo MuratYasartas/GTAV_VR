@@ -398,6 +398,27 @@ bool XRHMDSupport::BeginFrame() {
         return false;
     }
 
+    // Idle-headset throttle: with the HMD off, the session sits at
+    // SYNCHRONIZED/VISIBLE (never FOCUSED) and some runtimes (Pimax, observed
+    // live 2026-07-26) then throttle xrWaitFrame hard - and since our frame
+    // loop runs on the GAME's render thread, the game itself gets strangled
+    // (story-mode load crawled from ~2 min to >25 min with the headset
+    // asleep). Pump the loop at a reduced cadence in those states so the
+    // session state machine keeps advancing without throttling the game.
+    // IDLE/READY and FOCUSED run at full rate: early transitions need the
+    // pump, and FOCUSED is the normal play path.
+    {
+        const XR::SessionState st = session_->GetCurrentState();
+        if (st == XR::SessionState::Synchronized || st == XR::SessionState::Visible) {
+            static uint64_t lastPumpMs = 0;
+            const uint64_t nowMs = GetTickCount64();
+            if (nowMs - lastPumpMs < 100) {
+                return false;  // game pass-through frame
+            }
+            lastPumpMs = nowMs;
+        }
+    }
+
     // Wait for frame
     if (!frame_manager_->WaitFrame()) {
         return false;

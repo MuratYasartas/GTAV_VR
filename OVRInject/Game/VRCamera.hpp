@@ -64,6 +64,7 @@ private:
     float lastFov_ = -1.0f;
     uint32_t updateCount_ = 0;
     uint32_t lastSnapSeq_ = 0;
+    uint64_t lastBridgeRetryMs_ = 0;
     bool loggedFirstPose_ = false;
 };
 

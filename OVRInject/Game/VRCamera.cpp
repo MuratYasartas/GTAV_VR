@@ -116,7 +116,17 @@ void VRCamera::Shutdown() {
 
 void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     auto& shv = ShvNatives::Get();
-    if (!shv.IsAvailable()) return;
+    if (!shv.IsAvailable()) {
+        // The bridge script thread may start AFTER our injection (ScriptHookV
+        // brings scripts up late in the game boot). Retry on a slow cadence;
+        // cheap - OpenFileMapping on failure.
+        const uint64_t nowMs = GetTickCount64();
+        if (nowMs - lastBridgeRetryMs_ >= 5000) {
+            lastBridgeRetryMs_ = nowMs;
+            shv.Initialize();
+        }
+        return;
+    }
 
     // Cutscenes / loading / menus: give the camera back to the game.
     if (gameState && (gameState->IsCutsceneActive() || gameState->IsLoading() ||
