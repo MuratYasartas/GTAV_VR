@@ -117,6 +117,9 @@ struct FrameServices {
                            bool useReprojection) = nullptr;
     // OpenVR overlay input + render + recenter plumbing (no-op on OpenXR).
     void (*updateOverlay)() = nullptr;
+    // Live game-window resize (drives GTA's own ResizeBuffers - the working
+    // path for in-game resolution control, verified live 2026-07-27).
+    void (*applyGameResolutionScale)(float scale) = nullptr;
 };
 
 class StereoEngine {

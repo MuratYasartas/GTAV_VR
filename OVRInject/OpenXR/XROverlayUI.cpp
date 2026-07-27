@@ -881,11 +881,8 @@ void XROverlayUI::RenderPerformanceSettings() {
 
     changed |= ImGui::SliderFloat("Render Scale", &settings_.renderScale, 0.5f, 2.0f, "%.2f");
     ImGui::SetItemTooltip("Adjust render resolution (lower = better performance, higher = sharper)");
-    ImGui::BeginDisabled();
-    ImGui::SliderFloat("Game Resolution Scale", &settings_.gameResolutionScale, 0.5f, 2.0f, "%.2f");
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Live game backbuffer resizing is disabled for stability; adjust GTA V resolution in-game instead.");
-    ImGui::TextDisabled("Game Resolution Scale is currently disabled to avoid DXGI swapchain crashes.");
+    changed |= ImGui::SliderFloat("Game Resolution Scale", &settings_.gameResolutionScale, 0.5f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("LIVE in-game resolution: resizes the game window (GTA re-renders at the new size). 1.0 = 1600x1600, higher = more pixels/sharper, lower = faster.");
 
     ImGui::Separator();
     ImGui::Text("Stereo Reprojection (Fake 3D)");

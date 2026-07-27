@@ -833,6 +833,24 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
     // max(smoothed head-translation speed, left-stick magnitude), plus a
     // constant floor while in a vehicle (the comfort.md vehicle profile calls
     // for a stronger vignette while driving).
+    /**
+     * Live game resolution control: resize the game window; GTA follows with
+     * its own ResizeBuffers (the working path - forcing ResizeBuffers from
+     * outside is rejected by DXGI, but a window resize is the game's own
+     * decision and lands cleanly). Square-ish windows maximize the per-eye
+     * pixel yield of the VR crop.
+     */
+    static void ApplyGameResolutionScale(float scale) {
+        if (!game_window_) {
+            return;
+        }
+        const int size = (std::max)(400, static_cast<int>(1600.0f * scale + 0.5f));
+        LOGSTRF("D3DHooks_VRManager: Game Resolution Scale %.2f - resizing game window toward %dx%d\n",
+                scale, size, size);
+        SetWindowPos(game_window_, nullptr, 100, 50, size, size,
+                     SWP_NOZORDER | SWP_SHOWWINDOW);
+    }
+
     static void UpdateVignetteParams(ID3D11DeviceContext* context, VR::IVRBackend* backend) {
         if (!vignette_constant_buffer_ || !context) {
             return;
@@ -2268,6 +2286,7 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         services.applySnapTurning = &ApplySnapTurningFromBackend;
         services.maybeResizeSwapchain = &MaybeResizeSwapchain;
         services.updateVignette = &UpdateVignetteParams;
+        services.applyGameResolutionScale = &ApplyGameResolutionScale;
         services.compositeHud = &CompositeHudOntoEye;
         services.finishHudFrame = &FinishHudFrameOp;
         services.prepareDepth = &PrepareDepthForReprojection;

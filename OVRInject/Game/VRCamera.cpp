@@ -79,6 +79,7 @@ bool VRCamera::IsAvailable() const {
 void VRCamera::Recenter() {
     hasRefRot_ = false;
     hasRefPos_ = false;
+    LOGSTR("VRCamera: recenter requested (references dropped)\n");
 }
 
 void VRCamera::Engage() {
@@ -239,6 +240,8 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         const float yaw = atan2f(-backX, backZ);
         refRot_ = DirectX::XMMatrixRotationY(yaw);
         hasRefRot_ = true;
+        LOGSTRF("VRCamera: reference (re)built - head yaw=%.1f deg, base rot=(%.1f, %.1f, %.1f)\n",
+                yaw * kRadToDeg, snap.rotX, snap.rotY, snap.rotZ);
     }
     const DirectX::XMMATRIX refInv = hasRefRot_
         ? DirectX::XMMatrixInverse(nullptr, refRot_)

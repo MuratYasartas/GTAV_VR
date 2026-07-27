@@ -539,6 +539,27 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         }
     }
 
+    // Game Resolution Scale (overlay): live-resize the game window - GTA
+    // follows with its own ResizeBuffers and the backbuffer grows/shrinks
+    // (the only working in-game resolution control; see ApplyGameResolutionScale).
+    // Same 1 s debounce so dragging the slider doesn't thrash the window.
+    {
+        float requestedGameScale = VR::GetPerformanceSettings().gameResolutionScale.load();
+        static float lastAppliedGameScale = -1.0f;
+        static float pendingGameScale = -1.0f;
+        static uint64_t pendingGameSinceMs = 0;
+        uint64_t nowMs = GetTickCount64();
+        if (requestedGameScale != pendingGameScale) {
+            pendingGameScale = requestedGameScale;
+            pendingGameSinceMs = nowMs;
+        }
+        if (pendingGameScale >= 0.5f && pendingGameScale != lastAppliedGameScale &&
+            nowMs - pendingGameSinceMs >= 1000 && services.applyGameResolutionScale) {
+            services.applyGameResolutionScale(pendingGameScale);
+            lastAppliedGameScale = pendingGameScale;
+        }
+    }
+
     if (services.maybeResizeSwapchain) {
         services.maybeResizeSwapchain(pSwapChain);
     }
