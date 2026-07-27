@@ -227,8 +227,17 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     const bool headTracking = stereoSettings.headTracking.load();
     const bool positionTracking = stereoSettings.positionTracking.load();
 
-    if ((headTracking || positionTracking) && !hasRefRot_) {
-        refRot_ = headRot;
+    if (!hasRefRot_) {
+        // Recenter contract: the reference is YAW-ONLY - looking straight at
+        // recenter time means "game forward" with the horizon kept level
+        // (never bake the user's pitch/roll into the reference; that was the
+        // "recenter rotates the image randomly" report).
+        // headRot rows = head axes in tracking coords (right, up, back);
+        // forward = -back. yaw about +Y, OpenXR: -Z forward.
+        const float backX = headRot.r[2].m128_f32[0];
+        const float backZ = headRot.r[2].m128_f32[2];
+        const float yaw = atan2f(-backX, backZ);
+        refRot_ = DirectX::XMMatrixRotationY(yaw);
         hasRefRot_ = true;
     }
     const DirectX::XMMATRIX refInv = hasRefRot_
