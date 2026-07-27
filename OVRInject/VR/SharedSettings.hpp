@@ -97,6 +97,10 @@ struct StereoSettings {
     // eye poses (xrLocateViews) and the stereoIPD slider is ignored - the
     // physically correct IPD for the HMD. When false, the slider rules.
     std::atomic<bool> ipdAuto{true};
+    // Head-motion prediction (ms). 0 = off (default; prediction destabilized
+    // tracking live). >0 extrapolates the head pose forward to compensate
+    // camera-write latency when turning. Overlay slider: 0-50ms.
+    std::atomic<float> headPredictMs{0.0f};
     std::atomic<bool> headTracking{true};
     std::atomic<bool> positionTracking{true};
     std::atomic<bool> recenterRequested{false};

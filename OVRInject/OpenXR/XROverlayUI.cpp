@@ -643,6 +643,8 @@ void XROverlayUI::RenderWorldSettings() {
         settings_.stereoMode = stereoMode;
         changed = true;
     }
+    changed |= ImGui::SliderFloat("Head Prediction (ms)", &settings_.headPredictMs, 0.0f, 50.0f, "%.0f");
+    ImGui::SetItemTooltip("Head-motion prediction when turning (compensates camera latency). 0 = off. Try 10-25 if turning feels laggy; reduce if the view oscillates.");
     changed |= ImGui::Checkbox("Auto IPD (runtime)", &settings_.ipdAuto);
     ImGui::SetItemTooltip("Eye offset taken from the HMD's own tracking data - the physically correct IPD. Recommended.");
     if (!settings_.ipdAuto) {
@@ -1096,6 +1098,7 @@ bool XROverlayUI::LoadSettings(const char* filename) {
         else if (key == "stereoMode") settings_.stereoMode = std::stoi(value);
         else if (key == "stereoIPD") settings_.stereoIPD = std::stof(value);
         else if (key == "ipdAuto") settings_.ipdAuto = (value == "1" || value == "true");
+        else if (key == "headPredictMs") settings_.headPredictMs = std::stof(value);
         else if (key == "headTracking") settings_.headTracking = (value == "1" || value == "true");
         else if (key == "positionTracking") settings_.positionTracking = (value == "1" || value == "true");
         else if (key == "snapTurning") settings_.snapTurning = (value == "1" || value == "true");
@@ -1181,6 +1184,7 @@ bool XROverlayUI::SaveSettings(const char* filename) {
     file << "stereoMode=" << settings_.stereoMode << "\n";
     file << "stereoIPD=" << settings_.stereoIPD << "\n";
     file << "ipdAuto=" << (settings_.ipdAuto ? 1 : 0) << "\n";
+    file << "headPredictMs=" << settings_.headPredictMs << "\n";
     file << "headTracking=" << (settings_.headTracking ? "1" : "0") << "\n";
     file << "positionTracking=" << (settings_.positionTracking ? "1" : "0") << "\n\n";
 

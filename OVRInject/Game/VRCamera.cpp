@@ -182,11 +182,16 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         static DirectX::XMMATRIX prevRot = DirectX::XMMatrixIdentity();
         static uint64_t prevTick = 0;
         static bool havePrev = false;
-        static float predictMs = [] {
+        // Default OFF (destabilized tracking live: oscillation + artifacts).
+        // Tunable from the overlay slider (stereoSettings.headPredictMs) or
+        // the env var as fallback.
+        static float envPredictMs = [] {
             char v[16] = {};
             DWORD n = GetEnvironmentVariableA("GTAVR_HEAD_PREDICT_MS", v, sizeof(v));
-            return (n > 0) ? static_cast<float>(atof(v)) : 20.0f;
+            return (n > 0) ? static_cast<float>(atof(v)) : 0.0f;
         }();
+        const float predictMs = (envPredictMs > 0.0f) ? envPredictMs
+            : VR::GetStereoSettings().headPredictMs.load();
         const uint64_t nowTick = GetTickCount64();
         if (predictMs > 0.0f && havePrev && prevTick != 0) {
             const float dt = static_cast<float>(nowTick - prevTick) / 1000.0f;
