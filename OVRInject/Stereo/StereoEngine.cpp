@@ -9,6 +9,7 @@
 #include "../Game/GtaCameraHook.hpp"
 #include "../Game/VRCamera.hpp"
 #include "../Game/GtaGameState.hpp"
+#include "../D3DHook/HudRedirect.hpp"
 #include "../Vive/HMDRenderer.hpp"
 #include "../Overlay/VirtualScreen.hpp"
 
@@ -554,6 +555,18 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     }
     LogBackbufferOnce(pBuffer, hmdRenderer);
 
+    // LukeRoss-style internal-buffer capture: when the scene hook captured the
+    // game's final LDR image (frame-scaled - much higher res than the
+    // downsampled backbuffer), the eye blits sample THAT instead. Owned by the
+    // Hud state - never released here.
+    ID3D11Texture2D* finalImage = Hud::GetFinalImage();
+    ID3D11Texture2D* frameSource = finalImage ? finalImage : pBuffer;
+    static bool loggedFrameSource = false;
+    if (finalImage && !loggedFrameSource) {
+        loggedFrameSource = true;
+        LOGSTR("StereoEngine: sampling captured final image instead of backbuffer (LukeRoss-style hi-res)\n");
+    }
+
     ID3D11DeviceContext* context = nullptr;
     backend->GetDevice()->GetImmediateContext(&context);
     if (!context) {
@@ -591,7 +604,7 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         // Angular crop: map the game's ultrawide frustum down to this eye's
         // XR frustum (angle-true image - the raw full-fill was the "zoomed,
         // low-res" complaint).
-        services.produceEye(backend->GetDevice(), context, pBuffer, renderEye, eyeSign, true, false, true);
+        services.produceEye(backend->GetDevice(), context, frameSource, renderEye, eyeSign, true, false, true);
     } else {
         // Mono fallback (camera unresolved): ONE aspect-fitted blit into the
         // left eye texture, which is then submitted for BOTH eyes - so both
@@ -599,7 +612,7 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         // full-stretch filled the near-square eye texture with the
         // ultrawide backbuffer, ~2.4x vertical over-stretch). The plain
         // non-AER path (camera ready but loading/menu) keeps full-fill.
-        services.produceEye(backend->GetDevice(), context, pBuffer,
+        services.produceEye(backend->GetDevice(), context, frameSource,
                             VR::Eye::Left, 0.0f, monoFallbackCopyBothEyes,
                             monoFallbackCopyBothEyes, false);
         if (!monoFallbackCopyBothEyes && services.renderRightEye) {

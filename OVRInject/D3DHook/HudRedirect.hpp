@@ -48,6 +48,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "MinHook.h"
@@ -213,6 +214,8 @@ struct State {
     // Current swapchain backbuffer (raw pointer, refreshed every Present; the
     // swapchain owns the reference).
     ID3D11Texture2D* backbuffer = nullptr;
+    ID3D11Texture2D* finalImage = nullptr;   // captured final LDR image (owned ref)
+    uint64_t finalImagePixels = 0;
     uint32_t bbWidth = 0;
     uint32_t bbHeight = 0;
     DXGI_FORMAT bbFormat = DXGI_FORMAT_UNKNOWN;
@@ -245,8 +248,12 @@ struct State {
     void* psSetShaderTarget = nullptr;
     void* gsSetShaderTarget = nullptr;
     void* omSetRenderTargetsTarget = nullptr;
+    void* copyResourceTarget = nullptr;
+    void* copySubresourceTarget = nullptr;
+    void* resolveSubresourceTarget = nullptr;
 };
 
+inline State& GetState();
 inline State& GetState() {
     static State state;
     return state;
@@ -281,6 +288,13 @@ typedef void(__stdcall* GSSetShaderFn)(ID3D11DeviceContext*, ID3D11GeometryShade
 typedef void(__stdcall* OMSetRenderTargetsFn)(ID3D11DeviceContext*, UINT,
                                               ID3D11RenderTargetView* const*,
                                               ID3D11DepthStencilView*);
+typedef void(__stdcall* CopyResourceFn)(ID3D11DeviceContext*, ID3D11Resource*,
+                                        ID3D11Resource*);
+typedef void(__stdcall* CopySubresourceRegionFn)(ID3D11DeviceContext*, ID3D11Resource*,
+                                                 UINT, UINT, UINT, UINT,
+                                                 ID3D11Resource*, UINT, const D3D11_BOX*);
+typedef void(__stdcall* ResolveSubresourceFn)(ID3D11DeviceContext*, ID3D11Resource*,
+                                              UINT, ID3D11Resource*, UINT, DXGI_FORMAT);
 
 static CreateVertexShaderFn Original_CreateVertexShader = nullptr;
 static CreateGeometryShaderFn Original_CreateGeometryShader = nullptr;
@@ -289,6 +303,64 @@ static VSSetShaderFn Original_VSSetShader = nullptr;
 static PSSetShaderFn Original_PSSetShader = nullptr;
 static GSSetShaderFn Original_GSSetShader = nullptr;
 static OMSetRenderTargetsFn Original_OMSetRenderTargets = nullptr;
+static CopyResourceFn Original_CopyResource = nullptr;
+static CopySubresourceRegionFn Original_CopySubresourceRegion = nullptr;
+static ResolveSubresourceFn Original_ResolveSubresource = nullptr;
+
+// Scene-buffer probe (copy path): the final blit to the backbuffer binds no
+// SRV (proven by the empty SRV scans), so it must be a copy/resolve. Log the
+// source of every copy whose destination is the backbuffer - that texture is
+// the game's final LDR image, the LukeRoss-style capture candidate.
+inline void ProbeCopyToBackbuffer(ID3D11Resource* dst, ID3D11Resource* src, const char* op) {
+    State& state = GetState();
+    if (!state.backbuffer || dst != state.backbuffer || !src) {
+        return;
+    }
+    static int probeLogged = 0;
+    if (probeLogged >= 30) {
+        return;
+    }
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(src->QueryInterface(__uuidof(ID3D11Texture2D),
+                                      reinterpret_cast<void**>(&tex))) && tex) {
+        D3D11_TEXTURE2D_DESC d = {};
+        tex->GetDesc(&d);
+        probeLogged++;
+        LOGSTRF("SceneProbe-Copy: %s backbuffer <- %ux%u fmt=%u samples=%u\n",
+                op, d.Width, d.Height, d.Format, d.SampleDesc.Count);
+        tex->Release();
+    }
+}
+
+inline void __stdcall hookedCopyResource(ID3D11DeviceContext* self,
+                                         ID3D11Resource* pDstResource,
+                                         ID3D11Resource* pSrcResource) {
+    ProbeCopyToBackbuffer(pDstResource, pSrcResource, "CopyResource");
+    Original_CopyResource(self, pDstResource, pSrcResource);
+}
+
+inline void __stdcall hookedCopySubresourceRegion(ID3D11DeviceContext* self,
+                                                  ID3D11Resource* pDstResource, UINT DstSubresource,
+                                                  UINT DstX, UINT DstY, UINT DstZ,
+                                                  ID3D11Resource* pSrcResource, UINT SrcSubresource,
+                                                  const D3D11_BOX* pSrcBox) {
+    ProbeCopyToBackbuffer(pDstResource, pSrcResource, "CopySubresourceRegion");
+    Original_CopySubresourceRegion(self, pDstResource, DstSubresource, DstX, DstY, DstZ,
+                                   pSrcResource, SrcSubresource, pSrcBox);
+}
+
+inline void __stdcall hookedResolveSubresource(ID3D11DeviceContext* self,
+                                               ID3D11Resource* pDstResource, UINT DstSubresource,
+                                               ID3D11Resource* pSrcResource, UINT SrcSubresource,
+                                               DXGI_FORMAT Format) {
+    ProbeCopyToBackbuffer(pDstResource, pSrcResource, "ResolveSubresource");
+    Original_ResolveSubresource(self, pDstResource, DstSubresource,
+                                pSrcResource, SrcSubresource, Format);
+}
+
+// The game's final LDR frame pre-downsample (nullptr when not captured yet).
+// Owned reference - do NOT release it; re-query next frame.
+inline ID3D11Texture2D* GetFinalImage() { return GetState().finalImage; }
 
 // Records shaderObject if its bytecode hash is in the registry.
 inline void RecordShaderIfHud(void* shaderObject, const void* bytecode, SIZE_T bytecodeLength,
@@ -507,23 +579,40 @@ inline void __stdcall hookedOMSetRenderTargets(ID3D11DeviceContext* self, UINT N
                                         ID3D11DepthStencilView* pDepthStencilView) {
     State& state = GetState();
 
-    // Scene-buffer probe (diagnostic, first few hits only): identify which
-    // texture feeds the FINAL backbuffer pass - i.e. the game's internal
-    // (possibly high-res, HDR) render target pre-downsample. This is the
-    // candidate for LukeRoss-style internal-buffer capture for VR quality.
-    if (state.backbuffer && ppRenderTargetViews && NumViews > 0) {
-        static int probeLogged = 0;
-        if (probeLogged < 6) {
-            for (UINT i = 0; i < NumViews; ++i) {
-                if (!ppRenderTargetViews[i]) continue;
-                ID3D11Resource* res = nullptr;
-                ppRenderTargetViews[i]->GetResource(&res);
-                const bool isBackbuffer = (res != nullptr && res == state.backbuffer);
-                if (res) res->Release();
-                if (!isBackbuffer) continue;
-                ID3D11ShaderResourceView* srv = nullptr;
-                self->PSGetShaderResources(0, 1, &srv);
-                if (srv) {
+    // Scene-buffer capture (LukeRoss-style): when a pass binds the backbuffer,
+    // scan PS+CS slots for the LARGEST sampled texture - that is the game's
+    // final LDR image pre-downsample (with frame scaling: much higher res
+    // than the backbuffer). Cached (AddRef) for the VR blit to sample from
+    // instead of the backbuffer.
+    // OPT-IN (GTAVR_SCENE_CAPTURE=1): the captured buffer is a game ping-pong
+    // target and reads race with the next frame's writes (vertical streaks at
+    // the edges, verified on dumps). Race-free capture needs migoto-style RT
+    // substitution - follow-up. Disabled by default.
+    static const bool sceneCaptureEnabled = [] {
+        char v[8] = {};
+        DWORD n = GetEnvironmentVariableA("GTAVR_SCENE_CAPTURE", v, sizeof(v));
+        return n > 0 && (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T');
+    }();
+    if (sceneCaptureEnabled && state.backbuffer && ppRenderTargetViews && NumViews > 0) {
+        for (UINT i = 0; i < NumViews; ++i) {
+            if (!ppRenderTargetViews[i]) continue;
+            ID3D11Resource* res = nullptr;
+            ppRenderTargetViews[i]->GetResource(&res);
+            const bool isBackbuffer = (res != nullptr && res == state.backbuffer);
+            if (res) res->Release();
+            if (!isBackbuffer) continue;
+
+            ID3D11Texture2D* best = nullptr;
+            uint64_t bestPixels = 0;
+            for (int stage = 0; stage < 2; ++stage) {
+                for (UINT slot = 0; slot < 8; ++slot) {
+                    ID3D11ShaderResourceView* srv = nullptr;
+                    if (stage == 0) {
+                        self->PSGetShaderResources(slot, 1, &srv);
+                    } else {
+                        self->CSGetShaderResources(slot, 1, &srv);
+                    }
+                    if (!srv) continue;
                     ID3D11Resource* srvRes = nullptr;
                     srv->GetResource(&srvRes);
                     ID3D11Texture2D* tex = nullptr;
@@ -531,16 +620,55 @@ inline void __stdcall hookedOMSetRenderTargets(ID3D11DeviceContext* self, UINT N
                                                                    reinterpret_cast<void**>(&tex))) && tex) {
                         D3D11_TEXTURE2D_DESC d = {};
                         tex->GetDesc(&d);
-                        LOGSTRF("SceneProbe: final-pass source = %ux%u fmt=%u samples=%u bind=0x%x\n",
-                                d.Width, d.Height, d.Format, d.SampleDesc.Count, d.BindFlags);
-                        probeLogged++;
-                        tex->Release();
+                        // LDR-family only: HDR/float buffers (scene, bloom,
+                        // R16G16 chains) are pre-tonemap and unusable here.
+                        bool ldr = false;
+                        switch (d.Format) {
+                        case DXGI_FORMAT_B8G8R8A8_UNORM:
+                        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+                        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+                        case DXGI_FORMAT_B8G8R8X8_UNORM:
+                        case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+                        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+                        case DXGI_FORMAT_R8G8B8A8_UNORM:
+                        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+                        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+                        case DXGI_FORMAT_R10G10B10A2_UNORM:
+                        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+                            ldr = true; break;
+                        default: break;
+                        }
+                        const uint64_t pixels = ldr ? static_cast<uint64_t>(d.Width) * d.Height : 0;
+                        if (pixels > bestPixels) {
+                            if (best) best->Release();
+                            best = tex;  // takes the QI ref
+                            bestPixels = pixels;
+                        } else {
+                            tex->Release();
+                        }
                     }
                     if (srvRes) srvRes->Release();
                     srv->Release();
                 }
-                break;
             }
+            if (best && bestPixels >= state.finalImagePixels) {
+                // Only ever upgrade: UI passes sampling small LDR atlases must
+                // not downgrade the captured scene image.
+                if (state.finalImage) state.finalImage->Release();
+                state.finalImage = best;  // owned ref
+                state.finalImagePixels = bestPixels;
+                static bool loggedCapture = false;
+                if (!loggedCapture) {
+                    D3D11_TEXTURE2D_DESC d = {};
+                    best->GetDesc(&d);
+                    LOGSTRF("SceneProbe: final image capture = %ux%u fmt=%u (backbuffer %ux%u)\n",
+                            d.Width, d.Height, d.Format, state.bbWidth, state.bbHeight);
+                    loggedCapture = true;
+                }
+            } else if (best) {
+                best->Release();
+            }
+            break;
         }
     }
 
@@ -877,7 +1005,10 @@ inline bool EnsureHooksInstalled(ID3D11Device* device) {
     if (state.hooksInstalled) {
         return true;
     }
-    if (!device || !GetRegistry().enabled) {
+    // Hooks install even when the HUD registry is disabled: substitution
+    // stays inert (gated by anyHudShaders), but the SceneProbe diagnostics in
+    // hookedOMSetRenderTargets must run regardless.
+    if (!device) {
         return false;
     }
 
@@ -896,11 +1027,15 @@ inline bool EnsureHooksInstalled(ID3D11Device* device) {
     }
     void** contextVtable = *reinterpret_cast<void***>(context);
     // d3d11.h ID3D11DeviceContext vtable: PSSetShader=9, VSSetShader=11,
-    // GSSetShader=23, OMSetRenderTargets=33.
+    // GSSetShader=23, OMSetRenderTargets=33, CopySubresourceRegion=46,
+    // CopyResource=47.
     state.psSetShaderTarget = contextVtable[9];
     state.vsSetShaderTarget = contextVtable[11];
     state.gsSetShaderTarget = contextVtable[23];
     state.omSetRenderTargetsTarget = contextVtable[33];
+    state.copySubresourceTarget = contextVtable[46];
+    state.copyResourceTarget = contextVtable[47];
+    state.resolveSubresourceTarget = contextVtable[57];
     context->Release();
 
     struct HookSpec {
@@ -924,6 +1059,12 @@ inline bool EnsureHooksInstalled(ID3D11Device* device) {
          reinterpret_cast<void**>(&Original_GSSetShader), "GSSetShader(23)"},
         {state.omSetRenderTargetsTarget, reinterpret_cast<void*>(&hookedOMSetRenderTargets),
          reinterpret_cast<void**>(&Original_OMSetRenderTargets), "OMSetRenderTargets(33)"},
+        {state.copySubresourceTarget, reinterpret_cast<void*>(&hookedCopySubresourceRegion),
+         reinterpret_cast<void**>(&Original_CopySubresourceRegion), "CopySubresourceRegion(46)"},
+        {state.copyResourceTarget, reinterpret_cast<void*>(&hookedCopyResource),
+         reinterpret_cast<void**>(&Original_CopyResource), "CopyResource(47)"},
+        {state.resolveSubresourceTarget, reinterpret_cast<void*>(&hookedResolveSubresource),
+         reinterpret_cast<void**>(&Original_ResolveSubresource), "ResolveSubresource(57)"},
     };
 
     uint32_t installed = 0;
@@ -963,6 +1104,11 @@ inline void ReleaseResources() {
     state.bbWidth = 0;
     state.bbHeight = 0;
     state.bbFormat = DXGI_FORMAT_UNKNOWN;
+    if (state.finalImage) {
+        state.finalImage->Release();
+        state.finalImage = nullptr;
+        state.finalImagePixels = 0;
+    }
     state.hudUsedThisFrame = false;
     std::lock_guard<std::mutex> lock(GetStateMutex());
     state.armed.clear();
@@ -975,6 +1121,8 @@ inline void UninstallHooks() {
         state.createVsTarget, state.createGsTarget, state.createPsTarget,
         state.vsSetShaderTarget, state.psSetShaderTarget, state.gsSetShaderTarget,
         state.omSetRenderTargetsTarget,
+        state.copySubresourceTarget, state.copyResourceTarget,
+        state.resolveSubresourceTarget,
     };
     for (void* target : targets) {
         if (target) {
