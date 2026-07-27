@@ -506,6 +506,44 @@ inline void __stdcall hookedOMSetRenderTargets(ID3D11DeviceContext* self, UINT N
                                         ID3D11RenderTargetView* const* ppRenderTargetViews,
                                         ID3D11DepthStencilView* pDepthStencilView) {
     State& state = GetState();
+
+    // Scene-buffer probe (diagnostic, first few hits only): identify which
+    // texture feeds the FINAL backbuffer pass - i.e. the game's internal
+    // (possibly high-res, HDR) render target pre-downsample. This is the
+    // candidate for LukeRoss-style internal-buffer capture for VR quality.
+    if (state.backbuffer && ppRenderTargetViews && NumViews > 0) {
+        static int probeLogged = 0;
+        if (probeLogged < 6) {
+            for (UINT i = 0; i < NumViews; ++i) {
+                if (!ppRenderTargetViews[i]) continue;
+                ID3D11Resource* res = nullptr;
+                ppRenderTargetViews[i]->GetResource(&res);
+                const bool isBackbuffer = (res != nullptr && res == state.backbuffer);
+                if (res) res->Release();
+                if (!isBackbuffer) continue;
+                ID3D11ShaderResourceView* srv = nullptr;
+                self->PSGetShaderResources(0, 1, &srv);
+                if (srv) {
+                    ID3D11Resource* srvRes = nullptr;
+                    srv->GetResource(&srvRes);
+                    ID3D11Texture2D* tex = nullptr;
+                    if (srvRes && SUCCEEDED(srvRes->QueryInterface(__uuidof(ID3D11Texture2D),
+                                                                   reinterpret_cast<void**>(&tex))) && tex) {
+                        D3D11_TEXTURE2D_DESC d = {};
+                        tex->GetDesc(&d);
+                        LOGSTRF("SceneProbe: final-pass source = %ux%u fmt=%u samples=%u bind=0x%x\n",
+                                d.Width, d.Height, d.Format, d.SampleDesc.Count, d.BindFlags);
+                        probeLogged++;
+                        tex->Release();
+                    }
+                    if (srvRes) srvRes->Release();
+                    srv->Release();
+                }
+                break;
+            }
+        }
+    }
+
     if (!state.anyHudShaders.load() || !state.backbuffer || !ppRenderTargetViews ||
         NumViews == 0 || NumViews > D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT) {
         Original_OMSetRenderTargets(self, NumViews, ppRenderTargetViews, pDepthStencilView);

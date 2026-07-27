@@ -1841,6 +1841,19 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             }
         }
 
+        // Latency (LukeRoss R.E.A.L. does the same): cap the DXGI frame
+        // latency at 1 so the game's present queue cannot run ahead of the
+        // VR camera write - less head-motion-to-photon lag when turning.
+        {
+            IDXGIDevice1* dxgiDevice1 = nullptr;
+            if (SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice1),
+                                                 reinterpret_cast<void**>(&dxgiDevice1))) && dxgiDevice1) {
+                dxgiDevice1->SetMaximumFrameLatency(1);
+                LOGSTR("D3DHooks_VRManager: DXGI maximum frame latency set to 1\n");
+                dxgiDevice1->Release();
+            }
+        }
+
         // Phase 5/6: comfort runtime keys + HUD identification (both no-op
         // unless enabled in config/manifest).
         LoadComfortRuntimeFromIni();
