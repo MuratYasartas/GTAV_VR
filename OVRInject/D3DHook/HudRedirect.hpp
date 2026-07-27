@@ -253,6 +253,7 @@ struct State {
     };
     std::vector<SceneSub> sceneSubs;
     ID3D11Texture2D* sceneOurs = nullptr;  // latest substituted scene target
+    std::unordered_set<ID3D11Texture2D*> ownTextures;  // never substitute these (our eye/overlay targets)
 
     // Hook targets/originals.
     void* createVsTarget = nullptr;
@@ -352,21 +353,26 @@ inline void ProbeCopyToBackbuffer(ID3D11Resource* dst, ID3D11Resource* src, cons
 
 inline bool IsSceneLdrFormat(DXGI_FORMAT fmt) {
     switch (fmt) {
+    // UNORM/SRGB only: TYPELESS is excluded - the XR swapchain images are
+    // B8G8R8A8_TYPELESS and must never be substituted, while the game's
+    // internal LDR is plain UNORM (verified live).
     case DXGI_FORMAT_B8G8R8A8_UNORM:
-    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
     case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
     case DXGI_FORMAT_B8G8R8X8_UNORM:
-    case DXGI_FORMAT_B8G8R8X8_TYPELESS:
     case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
     case DXGI_FORMAT_R8G8B8A8_UNORM:
-    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
     case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
     case DXGI_FORMAT_R10G10B10A2_UNORM:
-    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
         return true;
     default:
         return false;
     }
+}
+
+// Marks a texture as ours (eye targets, overlay surfaces): the substitution
+// must never touch them (it grabbed our own eye textures on first run).
+inline void RegisterOwnTexture(ID3D11Texture2D* tex) {
+    if (tex) GetState().ownTextures.insert(tex);
 }
 
 inline State::SceneSub* FindSceneSub(ID3D11Resource* gameRes) {
@@ -380,10 +386,26 @@ inline State::SceneSub* FindSceneSub(ID3D11Resource* gameRes) {
 
 // Registers the game's big LDR texture and creates our substitute (same
 // size/format, RT+SRV bindable). Returns nullptr on failure.
+// Concrete view format for TYPELESS sources (RTV/SRV creation with a null
+// desc fails with E_INVALIDARG on TYPELESS textures - seen live on the game's
+// B8G8R8A8_TYPELESS internal LDR).
+inline DXGI_FORMAT SceneViewFormat(DXGI_FORMAT fmt) {
+    switch (fmt) {
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8X8_TYPELESS: return DXGI_FORMAT_B8G8R8X8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS: return DXGI_FORMAT_R10G10B10A2_UNORM;
+    default: return fmt;
+    }
+}
+
 inline State::SceneSub* EnsureSceneSub(ID3D11Device* device,
                                        ID3D11Texture2D* gameTex,
                                        const D3D11_TEXTURE2D_DESC& desc) {
     State& state = GetState();
+    if (state.ownTextures.count(gameTex) > 0) {
+        return nullptr;  // one of ours (eye target / overlay) - never substitute
+    }
     for (auto& sub : state.sceneSubs) {
         if (sub.gameTex == gameTex) return &sub;
     }
@@ -401,19 +423,35 @@ inline State::SceneSub* EnsureSceneSub(ID3D11Device* device,
 
     State::SceneSub sub = {};
     sub.gameTex = gameTex;
-    if (FAILED(device->CreateTexture2D(&od, nullptr, &sub.ourTex)) || !sub.ourTex) {
-        LOGWNDF("SceneSub: CreateTexture2D failed (%ux%u fmt=%u)\n", od.Width, od.Height, od.Format);
+    HRESULT hr = device->CreateTexture2D(&od, nullptr, &sub.ourTex);
+    if (FAILED(hr) || !sub.ourTex) {
+        LOGWNDF("SceneSub: CreateTexture2D failed hr=0x%08X (%ux%u fmt=%u)\n",
+                static_cast<unsigned>(hr), od.Width, od.Height, od.Format);
         return nullptr;
     }
-    if (FAILED(device->CreateRenderTargetView(sub.ourTex, nullptr, &sub.ourRtv)) || !sub.ourRtv) {
+    const DXGI_FORMAT viewFmt = SceneViewFormat(od.Format);
+    D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format = viewFmt;
+    rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    rtvDesc.Texture2D.MipSlice = 0;
+    hr = device->CreateRenderTargetView(sub.ourTex, &rtvDesc, &sub.ourRtv);
+    if (FAILED(hr) || !sub.ourRtv) {
         sub.ourTex->Release();
-        LOGWNDF("SceneSub: CreateRenderTargetView failed\n");
+        LOGWNDF("SceneSub: CreateRenderTargetView failed hr=0x%08X fmt=%u\n",
+                static_cast<unsigned>(hr), od.Format);
         return nullptr;
     }
-    if (FAILED(device->CreateShaderResourceView(sub.ourTex, nullptr, &sub.ourSrv)) || !sub.ourSrv) {
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = viewFmt;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = 1;
+    hr = device->CreateShaderResourceView(sub.ourTex, &srvDesc, &sub.ourSrv);
+    if (FAILED(hr) || !sub.ourSrv) {
         sub.ourRtv->Release();
         sub.ourTex->Release();
-        LOGWNDF("SceneSub: CreateShaderResourceView failed\n");
+        LOGWNDF("SceneSub: CreateShaderResourceView failed hr=0x%08X fmt=%u\n",
+                static_cast<unsigned>(hr), od.Format);
         return nullptr;
     }
     state.sceneSubs.push_back(sub);

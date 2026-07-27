@@ -3,6 +3,7 @@
 #include "HMDRenderer.hpp"
 #include "../Log.hpp"
 #include "../VR/SharedSettings.hpp"
+#include "../D3DHook/HudRedirect.hpp"
 
 #include <cmath>
 
@@ -181,6 +182,8 @@ void HMDRenderer::Initialize()
 			        i, static_cast<unsigned>(hr), desc.Width, desc.Height);
 			continue;
 		}
+		// Mark as ours so the scene substitution never grabs the eye targets.
+		Hud::RegisterOwnTexture(eye_textures_[i]);
 
 		D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
 		rtv_desc.Format = ResolveViewFormat(desc.Format);
