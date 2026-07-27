@@ -173,6 +173,50 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     DirectX::XMMATRIX headRot = headPose;
     headRot.r[3] = DirectX::XMVectorSet(0, 0, 0, 1);
 
+    // Head-motion prediction (rotation): the camera write lands ~1-2 frames
+    // before photon (bridge tick + render), so the live pose is stale when
+    // the frame displays - the "blurry/laggy when turning" complaint. Extrap
+    // olate ~20ms ahead from the last two poses, capped at 12 degrees to stay
+    // stable on direction changes. GTAVR_HEAD_PREDICT_MS=0 disables.
+    {
+        static DirectX::XMMATRIX prevRot = DirectX::XMMatrixIdentity();
+        static uint64_t prevTick = 0;
+        static bool havePrev = false;
+        static float predictMs = [] {
+            char v[16] = {};
+            DWORD n = GetEnvironmentVariableA("GTAVR_HEAD_PREDICT_MS", v, sizeof(v));
+            return (n > 0) ? static_cast<float>(atof(v)) : 20.0f;
+        }();
+        const uint64_t nowTick = GetTickCount64();
+        if (predictMs > 0.0f && havePrev && prevTick != 0) {
+            const float dt = static_cast<float>(nowTick - prevTick) / 1000.0f;
+            if (dt > 0.002f && dt < 0.25f) {
+                // World-frame delta from prev to cur (row-vector: D = prev^-1 * cur),
+                // scaled by predictMs/dt and capped at 12 degrees.
+                const DirectX::XMMATRIX deltaMat = DirectX::XMMatrixMultiply(
+                    DirectX::XMMatrixInverse(nullptr, prevRot), headRot);
+                const DirectX::XMVECTOR delta = XMQuaternionRotationMatrix(deltaMat);
+                float t = (predictMs / 1000.0f) / dt;
+                DirectX::XMFLOAT4 dq;
+                DirectX::XMStoreFloat4(&dq, delta);
+                float angle = 2.0f * acosf((std::min)(1.0f, fabsf(dq.w)));
+                const float maxAngle = 12.0f * (3.14159265f / 180.0f);
+                if (angle * t > maxAngle && angle > 0.0001f) {
+                    t = maxAngle / angle;
+                }
+                const DirectX::XMVECTOR predDelta = DirectX::XMQuaternionSlerp(
+                    DirectX::XMQuaternionIdentity(), delta, t);
+                headRot = DirectX::XMMatrixMultiply(
+                    headRot, DirectX::XMMatrixRotationQuaternion(predDelta));
+            }
+        }
+        if (!havePrev || nowTick != prevTick) {
+            prevRot = headRot;
+            prevTick = nowTick;
+            havePrev = true;
+        }
+    }
+
     auto& stereoSettings = VR::GetStereoSettings();
     auto& cameraSettings = VR::GetCameraSettings();
     const bool headTracking = stereoSettings.headTracking.load();
