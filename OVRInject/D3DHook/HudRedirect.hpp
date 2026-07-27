@@ -240,6 +240,20 @@ struct State {
     // this frame; cleared by FinishFrame after the composite + clear.
     bool hudUsedThisFrame = false;
 
+    // Scene substitution (3DMigoto-style race-free internal capture): every
+    // big LDR render target the game binds is replaced with our own texture
+    // (same size/format), and SRV binds of the game's texture are replaced
+    // with ours. The game renders its final frame-scaled image into OUR
+    // buffer; the VR blit samples it - no ping-pong races.
+    struct SceneSub {
+        ID3D11Texture2D* gameTex = nullptr;  // borrowed (game owns)
+        ID3D11Texture2D* ourTex = nullptr;   // owned
+        ID3D11RenderTargetView* ourRtv = nullptr;
+        ID3D11ShaderResourceView* ourSrv = nullptr;
+    };
+    std::vector<SceneSub> sceneSubs;
+    ID3D11Texture2D* sceneOurs = nullptr;  // latest substituted scene target
+
     // Hook targets/originals.
     void* createVsTarget = nullptr;
     void* createGsTarget = nullptr;
@@ -251,6 +265,8 @@ struct State {
     void* copyResourceTarget = nullptr;
     void* copySubresourceTarget = nullptr;
     void* resolveSubresourceTarget = nullptr;
+    void* psSetShaderResourcesTarget = nullptr;
+    void* csSetShaderResourcesTarget = nullptr;
 };
 
 inline State& GetState();
@@ -332,6 +348,126 @@ inline void ProbeCopyToBackbuffer(ID3D11Resource* dst, ID3D11Resource* src, cons
     }
 }
 
+// --- Scene substitution helpers (3DMigoto-style) ------------------------------
+
+inline bool IsSceneLdrFormat(DXGI_FORMAT fmt) {
+    switch (fmt) {
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8X8_UNORM:
+    case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+inline State::SceneSub* FindSceneSub(ID3D11Resource* gameRes) {
+    if (!gameRes) return nullptr;
+    State& state = GetState();
+    for (auto& sub : state.sceneSubs) {
+        if (sub.gameTex == gameRes) return &sub;
+    }
+    return nullptr;
+}
+
+// Registers the game's big LDR texture and creates our substitute (same
+// size/format, RT+SRV bindable). Returns nullptr on failure.
+inline State::SceneSub* EnsureSceneSub(ID3D11Device* device,
+                                       ID3D11Texture2D* gameTex,
+                                       const D3D11_TEXTURE2D_DESC& desc) {
+    State& state = GetState();
+    for (auto& sub : state.sceneSubs) {
+        if (sub.gameTex == gameTex) return &sub;
+    }
+    if (!device || state.sceneSubs.size() >= 8) {
+        return nullptr;
+    }
+
+    D3D11_TEXTURE2D_DESC od = desc;
+    od.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    od.SampleDesc.Count = 1;
+    od.SampleDesc.Quality = 0;
+    od.CPUAccessFlags = 0;
+    od.MiscFlags = 0;
+    od.Usage = D3D11_USAGE_DEFAULT;
+
+    State::SceneSub sub = {};
+    sub.gameTex = gameTex;
+    if (FAILED(device->CreateTexture2D(&od, nullptr, &sub.ourTex)) || !sub.ourTex) {
+        LOGWNDF("SceneSub: CreateTexture2D failed (%ux%u fmt=%u)\n", od.Width, od.Height, od.Format);
+        return nullptr;
+    }
+    if (FAILED(device->CreateRenderTargetView(sub.ourTex, nullptr, &sub.ourRtv)) || !sub.ourRtv) {
+        sub.ourTex->Release();
+        LOGWNDF("SceneSub: CreateRenderTargetView failed\n");
+        return nullptr;
+    }
+    if (FAILED(device->CreateShaderResourceView(sub.ourTex, nullptr, &sub.ourSrv)) || !sub.ourSrv) {
+        sub.ourRtv->Release();
+        sub.ourTex->Release();
+        LOGWNDF("SceneSub: CreateShaderResourceView failed\n");
+        return nullptr;
+    }
+    state.sceneSubs.push_back(sub);
+    LOGSTRF("SceneSub: registered game LDR %ux%u fmt=%u -> substituted with ours\n",
+            od.Width, od.Height, od.Format);
+    return &state.sceneSubs.back();
+}
+
+// Swaps SRVs that reference registered game textures for ours.
+inline void SubstituteSceneSrvs(UINT numViews,
+                                ID3D11ShaderResourceView* const* in,
+                                ID3D11ShaderResourceView** out) {
+    for (UINT i = 0; i < numViews; ++i) {
+        out[i] = in ? in[i] : nullptr;
+        if (!out[i]) continue;
+        ID3D11Resource* res = nullptr;
+        out[i]->GetResource(&res);
+        State::SceneSub* sub = FindSceneSub(res);
+        if (res) res->Release();
+        if (sub) out[i] = sub->ourSrv;
+    }
+}
+
+typedef void(__stdcall* PSSetShaderResourcesFn)(ID3D11DeviceContext*, UINT, UINT,
+                                                ID3D11ShaderResourceView* const*);
+typedef void(__stdcall* CSSetShaderResourcesFn)(ID3D11DeviceContext*, UINT, UINT,
+                                                ID3D11ShaderResourceView* const*);
+static PSSetShaderResourcesFn Original_PSSetShaderResources = nullptr;
+static CSSetShaderResourcesFn Original_CSSetShaderResources = nullptr;
+
+inline void __stdcall hookedPSSetShaderResources(ID3D11DeviceContext* self,
+                                                 UINT startSlot, UINT numViews,
+                                                 ID3D11ShaderResourceView* const* views) {
+    if (numViews > 0 && numViews <= 16 && views && !GetState().sceneSubs.empty()) {
+        ID3D11ShaderResourceView* replaced[16] = {};
+        SubstituteSceneSrvs(numViews, views, replaced);
+        Original_PSSetShaderResources(self, startSlot, numViews, replaced);
+        return;
+    }
+    Original_PSSetShaderResources(self, startSlot, numViews, views);
+}
+
+inline void __stdcall hookedCSSetShaderResources(ID3D11DeviceContext* self,
+                                                 UINT startSlot, UINT numViews,
+                                                 ID3D11ShaderResourceView* const* views) {
+    if (numViews > 0 && numViews <= 16 && views && !GetState().sceneSubs.empty()) {
+        ID3D11ShaderResourceView* replaced[16] = {};
+        SubstituteSceneSrvs(numViews, views, replaced);
+        Original_CSSetShaderResources(self, startSlot, numViews, replaced);
+        return;
+    }
+    Original_CSSetShaderResources(self, startSlot, numViews, views);
+}
+
 inline void __stdcall hookedCopyResource(ID3D11DeviceContext* self,
                                          ID3D11Resource* pDstResource,
                                          ID3D11Resource* pSrcResource) {
@@ -360,7 +496,10 @@ inline void __stdcall hookedResolveSubresource(ID3D11DeviceContext* self,
 
 // The game's final LDR frame pre-downsample (nullptr when not captured yet).
 // Owned reference - do NOT release it; re-query next frame.
-inline ID3D11Texture2D* GetFinalImage() { return GetState().finalImage; }
+inline ID3D11Texture2D* GetFinalImage() {
+    State& st = GetState();
+    return st.sceneOurs ? st.sceneOurs : st.finalImage;
+}
 
 // Records shaderObject if its bytecode hash is in the registry.
 inline void RecordShaderIfHud(void* shaderObject, const void* bytecode, SIZE_T bytecodeLength,
@@ -589,9 +728,26 @@ inline void __stdcall hookedOMSetRenderTargets(ID3D11DeviceContext* self, UINT N
     // the edges, verified on dumps). Race-free capture needs migoto-style RT
     // substitution - follow-up. Disabled by default.
     static const bool sceneCaptureEnabled = [] {
-        char v[8] = {};
+        char v[16] = {};
         DWORD n = GetEnvironmentVariableA("GTAVR_SCENE_CAPTURE", v, sizeof(v));
-        return n > 0 && (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T');
+        if (n > 0 && (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T')) {
+            return true;
+        }
+        // The game inherits its environment from the Rockstar service (user
+        // env vars never reach it) - same %TEMP% fallback as the backbuffer
+        // scale experiment.
+        char tmpPath[MAX_PATH];
+        if (GetTempPathA(MAX_PATH, tmpPath) > 0) {
+            strncat_s(tmpPath, "gtavr_scene_capture.txt", _TRUNCATE);
+            FILE* f = nullptr;
+            if (fopen_s(&f, tmpPath, "r") == 0 && f) {
+                char buf[8] = {};
+                bool on = fgets(buf, sizeof(buf), f) && (buf[0] == '1' || buf[0] == 'y' || buf[0] == 'Y');
+                fclose(f);
+                return on;
+            }
+        }
+        return false;
     }();
     if (sceneCaptureEnabled && state.backbuffer && ppRenderTargetViews && NumViews > 0) {
         for (UINT i = 0; i < NumViews; ++i) {
@@ -669,6 +825,49 @@ inline void __stdcall hookedOMSetRenderTargets(ID3D11DeviceContext* self, UINT N
                 best->Release();
             }
             break;
+        }
+    }
+
+    // Scene substitution (3DMigoto-style, opt-in GTAVR_SCENE_CAPTURE=1):
+    // replace every big LDR render target (>= 1.5x backbuffer) with our own
+    // texture. The game renders its frame-scaled image into ours; the SRV
+    // hooks make the game sample ours back, so the pipeline is transparent.
+    if (sceneCaptureEnabled && state.backbuffer && ppRenderTargetViews &&
+        NumViews > 0 && NumViews <= D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT) {
+        ID3D11RenderTargetView* replacedRt[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+        bool anySub = false;
+        ID3D11Device* device = nullptr;
+        for (UINT i = 0; i < NumViews; ++i) {
+            replacedRt[i] = ppRenderTargetViews[i];
+            if (!ppRenderTargetViews[i]) continue;
+            ID3D11Resource* res = nullptr;
+            ppRenderTargetViews[i]->GetResource(&res);
+            ID3D11Texture2D* tex = nullptr;
+            if (res && SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D),
+                                                       reinterpret_cast<void**>(&tex))) && tex) {
+                if (tex != state.backbuffer) {
+                    D3D11_TEXTURE2D_DESC d = {};
+                    tex->GetDesc(&d);
+                    if (IsSceneLdrFormat(d.Format) &&
+                        d.Width >= state.bbWidth + state.bbWidth / 2 &&
+                        d.Height >= state.bbHeight + state.bbHeight / 2) {
+                        if (!device) self->GetDevice(&device);
+                        State::SceneSub* sub = EnsureSceneSub(device, tex, d);
+                        if (sub) {
+                            replacedRt[i] = sub->ourRtv;
+                            anySub = true;
+                            state.sceneOurs = sub->ourTex;
+                        }
+                    }
+                }
+                tex->Release();
+            }
+            if (res) res->Release();
+        }
+        if (device) device->Release();
+        if (anySub) {
+            Original_OMSetRenderTargets(self, NumViews, replacedRt, pDepthStencilView);
+            return;
         }
     }
 
@@ -1036,6 +1235,8 @@ inline bool EnsureHooksInstalled(ID3D11Device* device) {
     state.copySubresourceTarget = contextVtable[46];
     state.copyResourceTarget = contextVtable[47];
     state.resolveSubresourceTarget = contextVtable[57];
+    state.psSetShaderResourcesTarget = contextVtable[8];
+    state.csSetShaderResourcesTarget = contextVtable[67];
     context->Release();
 
     struct HookSpec {
@@ -1065,6 +1266,10 @@ inline bool EnsureHooksInstalled(ID3D11Device* device) {
          reinterpret_cast<void**>(&Original_CopyResource), "CopyResource(47)"},
         {state.resolveSubresourceTarget, reinterpret_cast<void*>(&hookedResolveSubresource),
          reinterpret_cast<void**>(&Original_ResolveSubresource), "ResolveSubresource(57)"},
+        {state.psSetShaderResourcesTarget, reinterpret_cast<void*>(&hookedPSSetShaderResources),
+         reinterpret_cast<void**>(&Original_PSSetShaderResources), "PSSetShaderResources(8)"},
+        {state.csSetShaderResourcesTarget, reinterpret_cast<void*>(&hookedCSSetShaderResources),
+         reinterpret_cast<void**>(&Original_CSSetShaderResources), "CSSetShaderResources(67)"},
     };
 
     uint32_t installed = 0;
@@ -1109,6 +1314,13 @@ inline void ReleaseResources() {
         state.finalImage = nullptr;
         state.finalImagePixels = 0;
     }
+    for (auto& sub : state.sceneSubs) {
+        if (sub.ourSrv) sub.ourSrv->Release();
+        if (sub.ourRtv) sub.ourRtv->Release();
+        if (sub.ourTex) sub.ourTex->Release();
+    }
+    state.sceneSubs.clear();
+    state.sceneOurs = nullptr;
     state.hudUsedThisFrame = false;
     std::lock_guard<std::mutex> lock(GetStateMutex());
     state.armed.clear();
@@ -1123,6 +1335,7 @@ inline void UninstallHooks() {
         state.omSetRenderTargetsTarget,
         state.copySubresourceTarget, state.copyResourceTarget,
         state.resolveSubresourceTarget,
+        state.psSetShaderResourcesTarget, state.csSetShaderResourcesTarget,
     };
     for (void* target : targets) {
         if (target) {
