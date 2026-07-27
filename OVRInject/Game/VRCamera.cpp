@@ -174,6 +174,32 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     DirectX::XMMATRIX headRot = headPose;
     headRot.r[3] = DirectX::XMVectorSet(0, 0, 0, 1);
 
+    // Runtime-recenter self-heal: a recenter triggered OUTSIDE us (Pimax
+    // system gesture, OpenXR Toolkit, space change) re-bases the tracking
+    // space without touching our camera reference - the view then sits
+    // permanently tilted/rotated ("recenter shows the image sideways").
+    // A pose jump >50 deg between two ~90 Hz updates cannot be physical
+    // (>4500 deg/s), so it can only be a space re-base: re-reference.
+    {
+        static float lastYawDeg = 0.0f;
+        static bool haveLastYaw = false;
+        const float backX = headRot.r[2].m128_f32[0];
+        const float backZ = headRot.r[2].m128_f32[2];
+        const float curYawDeg = atan2f(-backX, backZ) * (180.0f / 3.14159265f);
+        if (haveLastYaw && hasRefRot_) {
+            float dYaw = curYawDeg - lastYawDeg;
+            while (dYaw > 180.0f) dYaw -= 360.0f;
+            while (dYaw < -180.0f) dYaw += 360.0f;
+            if (std::fabs(dYaw) > 50.0f) {
+                LOGSTRF("VRCamera: head pose jumped %.1f deg - re-referencing (external recenter)\n", dYaw);
+                hasRefRot_ = false;
+                hasRefPos_ = false;
+            }
+        }
+        lastYawDeg = curYawDeg;
+        haveLastYaw = true;
+    }
+
     // Head-motion prediction (rotation): the camera write lands ~1-2 frames
     // before photon (bridge tick + render), so the live pose is stale when
     // the frame displays - the "blurry/laggy when turning" complaint. Extrap
