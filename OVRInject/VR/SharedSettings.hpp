@@ -36,19 +36,19 @@ inline float ComputeSafeRenderScale(float requestedScale, uint32_t baseWidth, ui
         return scale;
     }
 
-    float maxDimensionScale = scale;
-    if (baseWidth > kMaxEyeTextureDimension || baseHeight > kMaxEyeTextureDimension) {
-        float widthScale = static_cast<float>(kMaxEyeTextureDimension) /
-                           static_cast<float>(baseWidth);
-        float heightScale = static_cast<float>(kMaxEyeTextureDimension) /
-                            static_cast<float>(baseHeight);
-        maxDimensionScale = (std::min)(widthScale, heightScale);
-        scale = (std::min)(scale, maxDimensionScale);
-    }
+    // Clamp the RESULTING size, not just the base (the old checks only fired
+    // when the BASE exceeded the caps, so renderScale=2 on a 5424x5356 HMD
+    // produced 10848x10712 eye textures - 116 MP per eye - and wedged the
+    // GPU/driver live, 2026-07-27).
+    const float widthScale = static_cast<float>(kMaxEyeTextureDimension) /
+                             static_cast<float>(baseWidth);
+    const float heightScale = static_cast<float>(kMaxEyeTextureDimension) /
+                              static_cast<float>(baseHeight);
+    scale = (std::min)(scale, (std::min)(widthScale, heightScale));
 
-    double basePixels = static_cast<double>(baseWidth) * static_cast<double>(baseHeight);
-    if (basePixels > static_cast<double>(kMaxEyeTexturePixels)) {
-        double pixelScale = std::sqrt(static_cast<double>(kMaxEyeTexturePixels) / basePixels);
+    const double basePixels = static_cast<double>(baseWidth) * static_cast<double>(baseHeight);
+    if (basePixels > 0.0) {
+        const double pixelScale = std::sqrt(static_cast<double>(kMaxEyeTexturePixels) / basePixels);
         scale = (std::min)(scale, static_cast<float>(pixelScale));
     }
 
