@@ -13,17 +13,18 @@ namespace {
 constexpr float kDegToRad = 0.01745329251994329577f;
 constexpr float kRadToDeg = 57.295779513082320876f;
 
-// Frame conventions (AUDIT 2026-07-27, decisive):
+// Frame conventions (AUDIT 2026-07-27, adversarially re-checked):
 //
 // GTA V world: x=east, y=north, z=up. Camera basis B uses the GAME matrix
 // layout: rows (right, forward, up) in GTA-world coords. GTA's native euler
-// convention is rotation ORDER 2 = ZXY (the default of GET_/SET_ natives):
-// angles rx=pitch about cam-right, ry=roll about cam-forward, rz=yaw about
-// world-up (0=north, positive=counterclockwise). Column form R = Rz*Rx*Ry,
-// which in row-vector DXM form is M = Ry(ry)*Rx(rx)*Rz(rz).
-// (The earlier ZYX/order-3 formulas plus the bridge reading order-0 angles
-// were the "recenter shows the image sideways" bug: any base with non-zero
-// pitch AND yaw got mis-decomposed.)
+// convention is rotation ORDER 2: per the FiveM docs, "rotate around the
+// z-axis, then the y-axis and finally the x-axis" (extrinsic Z -> Y -> X).
+// Angles: rx=pitch about cam-right, ry=roll about cam-forward, rz=yaw about
+// world-up (0=north, positive=counterclockwise). Column form R = Rx*Ry*Rz,
+// which in row-vector DXM form is M = Rz(rz)*Ry(ry)*Rx(rx).
+// (The earlier ZYX/order-3 formulas, and the brief Ry*Rx*Rz variant, both
+// mis-decomposed mixed-angle bases - the "recenter shows the image sideways"
+// bug found in the audit. Verified against the FiveM rotation-order doc.)
 //
 // XR head pose (XrPoseToMatrix): rows are the head's local axes in tracking
 // coords with x=right, y=up, z=BACK (OpenXR forward is -Z).
@@ -44,33 +45,32 @@ const DirectX::XMMATRIX kXrToCam =
                       0, -1, 0, 0,
                       0, 0, 0, 1);
 
-// GTA order-2 (ZXY) euler -> basis, rows (right, forward, up).
+// GTA order-2 euler -> basis, rows (right, forward, up).
+// Column R = Rx*Ry*Rz, so row-vector M = Rz*Ry*Rx.
 DirectX::XMMATRIX GtaEulerToBasis(float rxDeg, float ryDeg, float rzDeg) {
     using namespace DirectX;
-    return XMMatrixRotationY(ryDeg * kDegToRad) *
-           XMMatrixRotationX(rxDeg * kDegToRad) *
-           XMMatrixRotationZ(rzDeg * kDegToRad);
+    return XMMatrixRotationZ(rzDeg * kDegToRad) *
+           XMMatrixRotationY(ryDeg * kDegToRad) *
+           XMMatrixRotationX(rxDeg * kDegToRad);
 }
 
-// Inverse (GTA order-2 / ZXY):
-//   pitch = asin(forward.z)
-//   roll  = atan2(-right.z, up.z)
-//   yaw   = atan2(-forward.x, forward.y)
+// Inverse (GTA order-2, M = Rz*Ry*Rx with rows right/forward/up):
+//   roll  = asin(up.x)
+//   pitch = atan2(-up.y, up.z)
+//   yaw   = atan2(-forward.x, right.x)
 void BasisToGtaEuler(const DirectX::XMMATRIX& b, float& rxDeg, float& ryDeg, float& rzDeg) {
     const float rightX = b.r[0].m128_f32[0];
-    const float rightY = b.r[0].m128_f32[1];
-    const float rightZ = b.r[0].m128_f32[2];
     const float fwdX = b.r[1].m128_f32[0];
-    const float fwdY = b.r[1].m128_f32[1];
-    const float fwdZ = b.r[1].m128_f32[2];
+    const float upX = b.r[2].m128_f32[0];
+    const float upY = b.r[2].m128_f32[1];
     const float upZ = b.r[2].m128_f32[2];
 
-    float s = fwdZ;
+    float s = upX;
     if (s > 1.0f) s = 1.0f;
     if (s < -1.0f) s = -1.0f;
-    rxDeg = asinf(s) * kRadToDeg;
-    ryDeg = atan2f(-rightZ, upZ) * kRadToDeg;
-    rzDeg = atan2f(-fwdX, fwdY) * kRadToDeg;
+    ryDeg = asinf(s) * kRadToDeg;
+    rxDeg = atan2f(-upY, upZ) * kRadToDeg;
+    rzDeg = atan2f(-fwdX, rightX) * kRadToDeg;
 }
 
 } // namespace
