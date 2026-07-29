@@ -291,11 +291,56 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         DirectX::XMMatrixMultiply(kJt, dLocal), kXrToCam);
 
     // Apply in camera-local space, then carry the world basis.
-    const DirectX::XMMATRIX finalBasis = DirectX::XMMatrixMultiply(dCam, basis);
+    DirectX::XMMATRIX finalBasis = DirectX::XMMatrixMultiply(dCam, basis);
+
+    // Orientation smoothing: the bridge snapshot (base rotation) updates at
+    // the game's sim rate (~45 Hz) while we write at the present rate
+    // (~90 Hz) - the pose visibly stepped, the "look-around feels like
+    // ~20 fps" complaint. Exponential settle (~10 Hz) between the previous
+    // and current composed orientation; big jumps (cutscene/teleport/
+    // recenter) snap through instead of lagging.
+    {
+        static DirectX::XMMATRIX prevFinal = DirectX::XMMatrixIdentity();
+        static bool havePrevFinal = false;
+        static uint64_t prevFinalTick = 0;
+        const uint64_t nowMs = GetTickCount64();
+        if (havePrevFinal && prevFinalTick != 0 && nowMs > prevFinalTick) {
+            const float dt = static_cast<float>(nowMs - prevFinalTick) / 1000.0f;
+            if (dt < 0.5f) {
+                const DirectX::XMVECTOR q0 = DirectX::XMQuaternionRotationMatrix(prevFinal);
+                DirectX::XMVECTOR q1 = DirectX::XMQuaternionRotationMatrix(finalBasis);
+                const float dot = DirectX::XMVectorGetX(DirectX::XMVector4Dot(q0, q1));
+                // Antipodal guard: take the short path (otherwise slerp can
+                // swing the long way around on >180 degree steps).
+                if (dot < 0.0f) q1 = DirectX::XMVectorNegate(q1);
+                const float angDeg = 2.0f * acosf((std::min)(1.0f, std::fabs(dot))) * kRadToDeg;
+                if (angDeg <= 90.0f) {
+                    const float alpha = 1.0f - expf(-dt * 10.0f);
+                    finalBasis = DirectX::XMMatrixRotationQuaternion(
+                        DirectX::XMQuaternionSlerp(q0, q1, alpha));
+                }
+            }
+        }
+        prevFinal = finalBasis;
+        prevFinalTick = nowMs;
+        havePrevFinal = true;
+    }
 
     // --- Position -----------------------------------------------------------
+    // Camera anchor: the PLAYER'S HEAD BONE, not the gameplay camera. The
+    // gameplay cam sits behind/right of the character (GTA 3rd-person), so
+    // anchoring there put the character off-center with the view swinging
+    // around the wrong pivot ("character not centered / image rotates around
+    // the head" reports). Head anchor = correct pivot for orbit + POV, and
+    // the character stays centered when pulled back with the camera offsets.
     float worldScale = cameraSettings.worldScale.load();
     if (worldScale < 0.01f) worldScale = 0.01f;
+
+    const bool haveHead = (snap.pedHeadX != 0.0f || snap.pedHeadY != 0.0f ||
+                           snap.pedHeadZ != 0.0f);
+    const float anchorX = haveHead ? snap.pedHeadX : snap.coordX;
+    const float anchorY = haveHead ? snap.pedHeadY : snap.coordY;
+    const float anchorZ = haveHead ? snap.pedHeadZ : snap.coordZ;
 
     DirectX::XMVECTOR totalOffset = DirectX::XMVectorZero();
 
@@ -362,7 +407,7 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     }
 
     const DirectX::XMVECTOR finalPos = DirectX::XMVectorAdd(
-        DirectX::XMVectorSet(snap.coordX, snap.coordY, snap.coordZ, 0.0f),
+        DirectX::XMVectorSet(anchorX, anchorY, anchorZ, 0.0f),
         totalOffset);
 
     float rx, ry, rz;

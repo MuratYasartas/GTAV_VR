@@ -22,6 +22,7 @@ public:
         float fov = 0;
         float relHeading = 0;
         float relPitch = 0;
+        float pedHeadX = 0, pedHeadY = 0, pedHeadZ = 0;
         uint32_t sequence = 0;
     };
 
@@ -43,6 +44,9 @@ public:
             snapshot_.fov = state_->fov;
             snapshot_.relHeading = state_->relHeading;
             snapshot_.relPitch = state_->relPitch;
+            snapshot_.pedHeadX = state_->pedHead[0];
+            snapshot_.pedHeadY = state_->pedHead[1];
+            snapshot_.pedHeadZ = state_->pedHead[2];
             snapshot_.sequence = state_->stateSeq;
         }
         return snapshot_;
@@ -90,6 +94,7 @@ private:
         float fov;
         float relHeading;
         float relPitch;
+        float pedHead[3];
         uint32_t qHead;
         uint32_t qTail;
         int32_t lastCreateResult;

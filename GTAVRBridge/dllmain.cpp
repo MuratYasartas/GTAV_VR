@@ -35,6 +35,7 @@ struct BridgeState {
     float fov;
     float relHeading;
     float relPitch;
+    float pedHead[3];  // player head-bone world coords (SKEL_Head)
     uint32_t qHead;
     uint32_t qTail;
     int32_t lastCreateResult;
@@ -91,6 +92,8 @@ static constexpr uint64_t H_SET_CAM_ROT = 0x85973643155D0B07;
 static constexpr uint64_t H_SET_CAM_FOV = 0xB13C14F66A00D047;
 static constexpr uint64_t H_RENDER_SCRIPT_CAMS = 0x07E5B515DB0636FC;
 static constexpr uint64_t H_DESTROY_CAM = 0x865908C81A2C22E9;
+static constexpr uint64_t H_PLAYER_PED_ID = 0xD80958FC74E988A6;
+static constexpr uint64_t H_GET_PED_BONE_COORDS = 0x17C07FC640E86B4E;
 
 static inline void PushFloat(float v) {
     uint64_t bits = 0;
@@ -132,6 +135,30 @@ static void UpdateSnapshot(BridgeState* s) {
     s->fov = CallFloat(H_GET_GAMEPLAY_CAM_FOV);
     s->relHeading = CallFloat(H_GET_GAMEPLAY_CAM_REL_HEADING);
     s->relPitch = CallFloat(H_GET_GAMEPLAY_CAM_REL_PITCH);
+
+    // Player head-bone world position (camera anchor for VR): keeps the
+    // character centered and pivots at the right point when orbiting,
+    // instead of the gameplay cam's offset anchor (the "character off-center
+    // / view from the side" report).
+    {
+        s->pedHead[0] = s->pedHead[1] = s->pedHead[2] = 0.0f;
+        nativeInit(H_PLAYER_PED_ID);
+        uint64_t* rp = nativeCall();
+        if (rp) {
+            const uint64_t ped = *rp;
+            nativeInit(H_GET_PED_BONE_COORDS);
+            nativePush64(ped);
+            nativePush64(0x796E);  // SKEL_Head
+            PushFloat(0.0f); PushFloat(0.0f); PushFloat(0.0f);
+            uint64_t* rh = nativeCall();
+            if (rh) {
+                float* f = reinterpret_cast<float*>(rh);
+                s->pedHead[0] = f[0];  // Vector3: x@0, y@8, z@16 (SDK types.h)
+                s->pedHead[1] = f[2];
+                s->pedHead[2] = f[4];
+            }
+        }
+    }
     s->stateSeq++;
 }
 

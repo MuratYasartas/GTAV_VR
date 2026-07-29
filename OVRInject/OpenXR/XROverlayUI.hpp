@@ -289,6 +289,8 @@ private:
     float cursor_x_ = 0.0f;
     float cursor_y_ = 0.0f;
     bool recenter_requested_ = false;
+    uint64_t lastChangeMs_ = 0;
+    bool saveDirty_ = false;
 };
 
 } // namespace XR

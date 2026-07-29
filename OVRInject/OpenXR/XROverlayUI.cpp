@@ -465,6 +465,12 @@ void XROverlayUI::Render() {
     }
     ImGui::End();
 
+    // Debounced auto-save (see NotifySettingsChanged).
+    if (saveDirty_ && lastChangeMs_ != 0 && GetTickCount64() - lastChangeMs_ > 2000) {
+        saveDirty_ = false;
+        SaveSettings();
+    }
+
     if (wasVisible != visible_) {
         UpdateMouseCapture(visible_);
     }
@@ -879,9 +885,9 @@ void XROverlayUI::RenderPerformanceSettings() {
         ImGui::TextDisabled("Informational on OpenXR: the runtime manages reprojection itself.");
     }
 
-    changed |= ImGui::SliderFloat("Render Scale", &settings_.renderScale, 0.5f, 2.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Render Scale", &settings_.renderScale, 0.5f, 3.0f, "%.2f");
     ImGui::SetItemTooltip("Adjust render resolution (lower = better performance, higher = sharper)");
-    changed |= ImGui::SliderFloat("Game Resolution Scale", &settings_.gameResolutionScale, 0.5f, 2.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Game Resolution Scale", &settings_.gameResolutionScale, 0.5f, 3.0f, "%.2f");
     ImGui::SetItemTooltip("LIVE in-game resolution: resizes the game window (GTA re-renders at the new size). 1.0 = 1600x1600, higher = more pixels/sharper, lower = faster.");
 
     ImGui::Separator();
@@ -1244,6 +1250,11 @@ void XROverlayUI::NotifySettingsChanged() {
     if (on_settings_changed_) {
         on_settings_changed_(settings_);
     }
+    // Auto-save: persist 2 s after the last change (debounced) so slider
+    // edits survive restarts without the manual Save button (the "settings
+    // don't save" report). The actual write happens in Render().
+    lastChangeMs_ = GetTickCount64();
+    saveDirty_ = true;
 }
 
 bool XROverlayUI::ConsumeRecenterRequest() {
