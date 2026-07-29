@@ -116,8 +116,12 @@ static void UpdateSnapshot(BridgeState* s) {
         s->coord[1] = f[2];
         s->coord[2] = f[4];
     }
+    // NOTE: GTA's euler convention is rotation order 2 (ZXY) - the same
+    // order SET_CAM_ROT uses below. Reading with any other order
+    // mis-decomposes the base whenever pitch and yaw are both non-zero
+    // (the "image sits sideways" bug found in the 2026-07-27 audit).
     nativeInit(H_GET_GAMEPLAY_CAM_ROT);
-    nativePush64(0);
+    nativePush64(2);
     uint64_t* rr = nativeCall();
     if (rr) {
         float* f = reinterpret_cast<float*>(rr);

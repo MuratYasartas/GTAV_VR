@@ -13,13 +13,17 @@ namespace {
 constexpr float kDegToRad = 0.01745329251994329577f;
 constexpr float kRadToDeg = 57.295779513082320876f;
 
-// Frame conventions (derived + hand-verified 2026-07-26):
+// Frame conventions (AUDIT 2026-07-27, decisive):
 //
 // GTA V world: x=east, y=north, z=up. Camera basis B uses the GAME matrix
-// layout: rows (right, forward, up) in GTA-world coords. Order-2 euler
-// (degrees): rx=pitch about cam-right (positive=look up), ry=roll about
-// cam-forward, rz=yaw about world-up (0=north, positive=counterclockwise).
-// Row-vector build B = Rx*Ry*Rz yields exactly rows (right, forward, up).
+// layout: rows (right, forward, up) in GTA-world coords. GTA's native euler
+// convention is rotation ORDER 2 = ZXY (the default of GET_/SET_ natives):
+// angles rx=pitch about cam-right, ry=roll about cam-forward, rz=yaw about
+// world-up (0=north, positive=counterclockwise). Column form R = Rz*Rx*Ry,
+// which in row-vector DXM form is M = Ry(ry)*Rx(rx)*Rz(rz).
+// (The earlier ZYX/order-3 formulas plus the bridge reading order-0 angles
+// were the "recenter shows the image sideways" bug: any base with non-zero
+// pitch AND yaw got mis-decomposed.)
 //
 // XR head pose (XrPoseToMatrix): rows are the head's local axes in tracking
 // coords with x=right, y=up, z=BACK (OpenXR forward is -Z).
@@ -30,8 +34,8 @@ constexpr float kRadToDeg = 57.295779513082320876f;
 //   B'      = D_cam * B          (delta applied in camera-LOCAL space)
 // with J rows [(1,0,0),(0,0,1),(0,-1,0)]: xr-x -> cam-right, xr-y -> cam-up,
 // xr-z(back) -> -cam-forward.
-// Hand-checked: pure yaw-left -> D_cam=Rz(+a) -> cam yaw +a (CCW=left);
-// pure pitch-up -> Rx(+a) -> pitch +a (up); roll-right -> Ry(+a).
+// Unit-verified (build_int/verify_vrcamera_math.py, ALL PASS): yaw/pitch/roll
+// land on the right component, world-delta angle == head angle, round-trip exact.
 
 // XR-head-local -> GTA-cam-local axis remap.
 const DirectX::XMMATRIX kXrToCam =
@@ -40,28 +44,33 @@ const DirectX::XMMATRIX kXrToCam =
                       0, -1, 0, 0,
                       0, 0, 0, 1);
 
+// GTA order-2 (ZXY) euler -> basis, rows (right, forward, up).
 DirectX::XMMATRIX GtaEulerToBasis(float rxDeg, float ryDeg, float rzDeg) {
     using namespace DirectX;
-    return XMMatrixRotationX(rxDeg * kDegToRad) *
-           XMMatrixRotationY(ryDeg * kDegToRad) *
+    return XMMatrixRotationY(ryDeg * kDegToRad) *
+           XMMatrixRotationX(rxDeg * kDegToRad) *
            XMMatrixRotationZ(rzDeg * kDegToRad);
-    // rows: r0=right, r1=forward, r2=up (GTA world coords)
 }
 
-// Inverse of GtaEulerToBasis (exact round-trip for |roll| < 90 deg).
+// Inverse (GTA order-2 / ZXY):
+//   pitch = asin(forward.z)
+//   roll  = atan2(-right.z, up.z)
+//   yaw   = atan2(-forward.x, forward.y)
 void BasisToGtaEuler(const DirectX::XMMATRIX& b, float& rxDeg, float& ryDeg, float& rzDeg) {
     const float rightX = b.r[0].m128_f32[0];
     const float rightY = b.r[0].m128_f32[1];
     const float rightZ = b.r[0].m128_f32[2];
+    const float fwdX = b.r[1].m128_f32[0];
+    const float fwdY = b.r[1].m128_f32[1];
     const float fwdZ = b.r[1].m128_f32[2];
     const float upZ = b.r[2].m128_f32[2];
 
-    float s = -rightZ;
+    float s = fwdZ;
     if (s > 1.0f) s = 1.0f;
     if (s < -1.0f) s = -1.0f;
-    ryDeg = asinf(s) * kRadToDeg;
-    rxDeg = atan2f(fwdZ, upZ) * kRadToDeg;
-    rzDeg = atan2f(rightY, rightX) * kRadToDeg;
+    rxDeg = asinf(s) * kRadToDeg;
+    ryDeg = atan2f(-rightZ, upZ) * kRadToDeg;
+    rzDeg = atan2f(-fwdX, fwdY) * kRadToDeg;
 }
 
 } // namespace
