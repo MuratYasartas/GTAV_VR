@@ -18,7 +18,7 @@
 
 #include "main.h"
 
-#define GTAVR_BRIDGE_MAGIC 0x47534856u // 'GSHV'
+#define GTAVR_BRIDGE_MAGIC 0x32564847u // 'GHV2' - v2 adds pedHead to the ABI
 #define GTAVR_BRIDGE_MAPPING "GTAVR_SHV_BRIDGE"
 
 struct BridgeOp {
@@ -42,6 +42,7 @@ struct BridgeState {
     uint32_t bridgeAlive;
     BridgeOp queue[64];
 };
+static_assert(sizeof(BridgeState) == 1352, "GTAVR bridge ABI changed; bump magic and client layout");
 
 enum OpType : uint32_t {
     OpSetRawYawPitch = 1,
@@ -108,6 +109,11 @@ static inline float CallFloat(uint64_t hash) {
 }
 
 static void UpdateSnapshot(BridgeState* s) {
+    // Cross-process seqlock: odd while the payload is being written, even
+    // when stable.  The injected client retries instead of consuming a mix
+    // of two game ticks (a source of visible camera jitter).
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&s->stateSeq));
+    MemoryBarrier();
     // RAGE native Vector3 returns use an 8-byte stride per component
     // (x@0, y@8, z@16) - confirmed live: a contiguous float3 read yielded
     // y==0.0 and z==realY (GTAVR session 2026-07-26).
@@ -159,7 +165,8 @@ static void UpdateSnapshot(BridgeState* s) {
             }
         }
     }
-    s->stateSeq++;
+    MemoryBarrier();
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&s->stateSeq));
 }
 
 static void ExecuteOp(BridgeState* s, const BridgeOp& op) {

@@ -4,7 +4,7 @@
 namespace OVRInject {
 namespace Game {
 
-static constexpr uint32_t kBridgeMagic = 0x47534856u; // 'GSHV'
+static constexpr uint32_t kBridgeMagic = 0x32564847u; // 'GHV2'
 static constexpr const char* kBridgeMapping = "GTAVR_SHV_BRIDGE";
 
 ShvNatives& ShvNatives::Get() {

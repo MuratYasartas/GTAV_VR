@@ -95,6 +95,8 @@
     <ClCompile Include="TestEyeView.cpp" />
     <ClCompile Include="TestEyeDelivery.cpp" />
     <ClCompile Include="TestImageFit.cpp" />
+    <ClCompile Include="TestSharedSettings.cpp" />
+    <ClCompile Include="TestXRRecenter.cpp" />
     <ClCompile Include="TestBuildManifest.cpp" />
     <ClCompile Include="Stubs.cpp" />
     <!-- Production code under test, compiled in directly (no OVRInject link). -->
@@ -105,6 +107,7 @@
     <ClInclude Include="TestFramework.hpp" />
     <ClInclude Include="..\OVRInject\Stereo\EyeDelivery.hpp" />
     <ClInclude Include="..\OVRInject\Stereo\ImageFit.hpp" />
+    <ClInclude Include="..\OVRInject\OpenXR\XRRecenter.hpp" />
     <ClInclude Include="..\OVRInject\Game\BuildManifest.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

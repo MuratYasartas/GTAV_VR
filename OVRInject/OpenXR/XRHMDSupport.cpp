@@ -878,6 +878,7 @@ void XRHMDSupport::ApplyOverlaySettings(const XR::VRSettings& settings) {
     repro.screenOffsetX.store(settings.imageOffsetX);
     repro.screenOffsetY.store(settings.imageOffsetY);
     repro.imageScale.store(settings.imageScale);
+    repro.autoImageAlignment.store(settings.imageAutoAlign);
 
     auto& comfort = VR::GetComfortSettings();
     comfort.snapTurning.store(settings.snapTurning);

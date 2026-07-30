@@ -18,6 +18,7 @@
 
 using OVRInject::Stereo::ComputeContainFit;
 using OVRInject::Stereo::ComputeUserImageOffsets;
+using OVRInject::Stereo::ComputeProjectionCenterSampleOffsets;
 using OVRInject::Stereo::ContainFitRect;
 
 // The live case: a 3840x1600 ultrawide backbuffer into a 4096x4045
@@ -117,4 +118,25 @@ TEST(ImageOffsets_MonoKeepsXZeroAndAppliesY) {
     ComputeUserImageOffsets(0.0f, 0.0f, 1.0f, x, y);
     CHECK_NEAR(x, 0.0, 1e-6);
     CHECK_NEAR(y, 0.0, 1e-6);
+}
+
+TEST(ImageOffsets_AutoProjectionCenterMapsSymmetricSourceToLensCenter) {
+    constexpr float m20 = 0.20f;
+    constexpr float m21 = -0.10f;
+    constexpr float scaleX = 1.25f;
+    constexpr float scaleY = 1.50f;
+    float offsetX = 0.0f;
+    float offsetY = 0.0f;
+    ComputeProjectionCenterSampleOffsets(
+        m20, m21, scaleX, scaleY, offsetX, offsetY);
+
+    // Shader inverse mapping:
+    // sourceUV = (targetUV-.5)/scale + .5 + offset.
+    // The computed target positions must sample the symmetric source center.
+    const float targetX = 0.5f - 0.5f * m20;
+    const float targetY = 0.5f + 0.5f * m21;
+    const float sourceX = (targetX - 0.5f) / scaleX + 0.5f + offsetX;
+    const float sourceY = (targetY - 0.5f) / scaleY + 0.5f + offsetY;
+    CHECK_NEAR(sourceX, 0.5f, 1e-6f);
+    CHECK_NEAR(sourceY, 0.5f, 1e-6f);
 }

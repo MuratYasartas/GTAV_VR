@@ -1,4 +1,5 @@
 #include "XRViewManager.hpp"
+#include "XRRecenter.hpp"
 
 #include <cctype>
 #include <cstdlib>
@@ -11,7 +12,11 @@ namespace {
 static XrQuaternionf MultiplyQuat(const XrQuaternionf& a, const XrQuaternionf& b) {
     XMVECTOR qa = XMVectorSet(a.x, a.y, a.z, a.w);
     XMVECTOR qb = XMVectorSet(b.x, b.y, b.z, b.w);
-    XMVECTOR qr = XMQuaternionMultiply(qa, qb);
+    // XMQuaternionMultiply(Q1,Q2) returns the concatenation Q1 followed by
+    // Q2 (algebraically Q2*Q1). Pose composition below is a*b, matching
+    // position = a.position + rotate(a, b.position), so reverse the API
+    // arguments to obtain algebraic qa*qb.
+    XMVECTOR qr = XMQuaternionMultiply(qb, qa);
     XrQuaternionf out = {};
     out.x = XMVectorGetX(qr);
     out.y = XMVectorGetY(qr);
@@ -68,19 +73,6 @@ static void NormalizePose(XrPosef& pose) {
     XMFLOAT4 out;
     XMStoreFloat4(&out, q);
     pose.orientation = {out.x, out.y, out.z, out.w};
-}
-
-static XrQuaternionf YawOnlyRecenter(const XrPosef& pose) {
-    XMFLOAT3 forward = GetPoseForward(pose);
-    float yaw = atan2f(forward.x, -forward.z);
-    XMVECTOR axis = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    XMVECTOR q = XMQuaternionRotationAxis(axis, -yaw);
-    XrQuaternionf out = {};
-    out.x = XMVectorGetX(q);
-    out.y = XMVectorGetY(q);
-    out.z = XMVectorGetZ(q);
-    out.w = XMVectorGetW(q);
-    return out;
 }
 
 } // namespace
@@ -509,8 +501,7 @@ void XRViewManager::Recenter(bool yaw_only) {
     }
 
     if (yaw_only) {
-        recenter_pose_ = IdentityPose();
-        recenter_pose_.orientation = YawOnlyRecenter(head_pose_);
+        recenter_pose_ = ComputeYawOnlyRecenterPose(head_pose_);
         recenter_active_ = true;
         return;
     }

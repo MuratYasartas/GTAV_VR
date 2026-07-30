@@ -772,16 +772,21 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         // Scripted-cam path: the bridge executes the queued native ops on the
         // game main thread before the next render - same ordering contract as
         // the memory write below (see the write-timing comment above).
+        // Consume recenter before the camera update so the current frame is
+        // written from the new reference.  The old post-update order emitted
+        // one stale frame and then fed that jump through orientation smoothing.
+        if (stereoSettings.recenterRequested.exchange(false)) {
+            vrCamera->Recenter();
+        }
         if (wantAlternate) {
             vrCamera->Update(static_cast<VR::Eye>(aerPlan.cameraWriteEye), gameState);
         } else {
             vrCamera->Update(VR::Eye::Left, gameState);
         }
-
-        if (stereoSettings.recenterRequested.exchange(false)) {
-            vrCamera->Recenter();
-        }
     } else if (cameraHook) {
+        if (stereoSettings.recenterRequested.exchange(false)) {
+            cameraHook->RecenterPose();
+        }
         if (wantAlternate && cameraHook->IsReady()) {
             // The game renders the OTHER eye next frame; write that eye's
             // camera now so it is in place before the next game render.
@@ -790,9 +795,6 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
             cameraHook->Update(VR::Eye::Left, gameState);
         }
 
-        if (stereoSettings.recenterRequested.exchange(false)) {
-            cameraHook->RecenterPose();
-        }
     }
 
     if (havePreSnapshot && ApplyVehicleHorizonLockCorrection(preSnapshot)) {

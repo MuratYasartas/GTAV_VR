@@ -88,6 +88,7 @@ bool VRCamera::IsAvailable() const {
 void VRCamera::Recenter() {
     hasRefRot_ = false;
     hasRefPos_ = false;
+    haveLastHeadYaw_ = false;
     LOGSTR("VRCamera: recenter requested (references dropped)\n");
 }
 
@@ -98,6 +99,7 @@ void VRCamera::Engage() {
     engaged_ = true;
     hasRefRot_ = false;  // re-reference on resume so the view does not snap
     hasRefPos_ = false;
+    haveLastHeadYaw_ = false;
     LOGSTRF("VRCamera: engaged (cam=%d)\n", cam_);
 }
 
@@ -190,13 +192,11 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     // A pose jump >50 deg between two ~90 Hz updates cannot be physical
     // (>4500 deg/s), so it can only be a space re-base: re-reference.
     {
-        static float lastYawDeg = 0.0f;
-        static bool haveLastYaw = false;
         const float backX = headRot.r[2].m128_f32[0];
         const float backZ = headRot.r[2].m128_f32[2];
         const float curYawDeg = atan2f(-backX, backZ) * (180.0f / 3.14159265f);
-        if (haveLastYaw && hasRefRot_) {
-            float dYaw = curYawDeg - lastYawDeg;
+        if (haveLastHeadYaw_ && hasRefRot_) {
+            float dYaw = curYawDeg - lastHeadYawDeg_;
             while (dYaw > 180.0f) dYaw -= 360.0f;
             while (dYaw < -180.0f) dYaw += 360.0f;
             if (std::fabs(dYaw) > 50.0f) {
@@ -205,8 +205,8 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
                 hasRefPos_ = false;
             }
         }
-        lastYawDeg = curYawDeg;
-        haveLastYaw = true;
+        lastHeadYawDeg_ = curYawDeg;
+        haveLastHeadYaw_ = true;
     }
 
     // Head-motion prediction (rotation): the camera write lands ~1-2 frames
@@ -293,38 +293,10 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     // Apply in camera-local space, then carry the world basis.
     DirectX::XMMATRIX finalBasis = DirectX::XMMatrixMultiply(dCam, basis);
 
-    // Orientation smoothing: the bridge snapshot (base rotation) updates at
-    // the game's sim rate (~45 Hz) while we write at the present rate
-    // (~90 Hz) - the pose visibly stepped, the "look-around feels like
-    // ~20 fps" complaint. Exponential settle (~10 Hz) between the previous
-    // and current composed orientation; big jumps (cutscene/teleport/
-    // recenter) snap through instead of lagging.
-    {
-        static DirectX::XMMATRIX prevFinal = DirectX::XMMatrixIdentity();
-        static bool havePrevFinal = false;
-        static uint64_t prevFinalTick = 0;
-        const uint64_t nowMs = GetTickCount64();
-        if (havePrevFinal && prevFinalTick != 0 && nowMs > prevFinalTick) {
-            const float dt = static_cast<float>(nowMs - prevFinalTick) / 1000.0f;
-            if (dt < 0.5f) {
-                const DirectX::XMVECTOR q0 = DirectX::XMQuaternionRotationMatrix(prevFinal);
-                DirectX::XMVECTOR q1 = DirectX::XMQuaternionRotationMatrix(finalBasis);
-                const float dot = DirectX::XMVectorGetX(DirectX::XMVector4Dot(q0, q1));
-                // Antipodal guard: take the short path (otherwise slerp can
-                // swing the long way around on >180 degree steps).
-                if (dot < 0.0f) q1 = DirectX::XMVectorNegate(q1);
-                const float angDeg = 2.0f * acosf((std::min)(1.0f, std::fabs(dot))) * kRadToDeg;
-                if (angDeg <= 90.0f) {
-                    const float alpha = 1.0f - expf(-dt * 10.0f);
-                    finalBasis = DirectX::XMMatrixRotationQuaternion(
-                        DirectX::XMQuaternionSlerp(q0, q1, alpha));
-                }
-            }
-        }
-        prevFinal = finalBasis;
-        prevFinalTick = nowMs;
-        havePrevFinal = true;
-    }
+    // Never smooth finalBasis: it contains the live headset rotation.  The
+    // former 10 Hz low-pass filtered the user's real pose, adding roughly
+    // 100 ms of lag and making 90 Hz tracking look like ~20 Hz.  AER already
+    // late-latches headPose immediately before this update.
 
     // --- Position -----------------------------------------------------------
     // Camera anchor: the PLAYER'S HEAD BONE, not the gameplay camera. The
@@ -333,11 +305,18 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     // around the wrong pivot ("character not centered / image rotates around
     // the head" reports). Head anchor = correct pivot for orbit + POV, and
     // the character stays centered when pulled back with the camera offsets.
-    float worldScale = cameraSettings.worldScale.load();
-    if (worldScale < 0.01f) worldScale = 0.01f;
+    const float trackingScale = VR::ComputeTrackingMetersToGameScale(
+        cameraSettings.worldScale.load());
 
-    const bool haveHead = (snap.pedHeadX != 0.0f || snap.pedHeadY != 0.0f ||
-                           snap.pedHeadZ != 0.0f);
+    const bool headFinite = std::isfinite(snap.pedHeadX) &&
+                            std::isfinite(snap.pedHeadY) &&
+                            std::isfinite(snap.pedHeadZ);
+    const float headDx = snap.pedHeadX - snap.coordX;
+    const float headDy = snap.pedHeadY - snap.coordY;
+    const float headDz = snap.pedHeadZ - snap.coordZ;
+    const bool haveHead = headFinite &&
+        (snap.pedHeadX != 0.0f || snap.pedHeadY != 0.0f || snap.pedHeadZ != 0.0f) &&
+        (headDx * headDx + headDy * headDy + headDz * headDz) < 100.0f;
     const float anchorX = haveHead ? snap.pedHeadX : snap.coordX;
     const float anchorY = haveHead ? snap.pedHeadY : snap.coordY;
     const float anchorZ = haveHead ? snap.pedHeadZ : snap.coordZ;
@@ -353,7 +332,7 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
             hasRefPos_ = true;
         }
         DirectX::XMVECTOR delta = DirectX::XMVectorSubtract(headPos, refPos_);
-        delta = DirectX::XMVectorScale(delta, worldScale);
+        delta = DirectX::XMVectorScale(delta, trackingScale);
         // tracking coords -> ref-head-local -> cam-local -> GTA world
         const DirectX::XMMATRIX trackToWorld = DirectX::XMMatrixMultiply(
             DirectX::XMMatrixMultiply(refInv, kXrToCam), basis);
@@ -368,12 +347,11 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     {
         const float heightOffset = cameraSettings.playerHeight.load() - 1.7f;
         // cam-local component order for the basis rows (right, forward, up)
-        const DirectX::XMVECTOR localCam = DirectX::XMVectorScale(
-            DirectX::XMVectorSet(cameraSettings.cameraOffsetX.load(),
-                                 cameraSettings.cameraOffsetZ.load(),
-                                 cameraSettings.cameraOffsetY.load() + heightOffset,
-                                 0.0f),
-            worldScale);
+        const DirectX::XMVECTOR localCam = DirectX::XMVectorSet(
+            cameraSettings.cameraOffsetX.load(),
+            cameraSettings.cameraOffsetZ.load(),
+            cameraSettings.cameraOffsetY.load() + heightOffset,
+            0.0f);
         totalOffset = DirectX::XMVectorAdd(
             totalOffset, DirectX::XMVector3Transform(localCam, finalBasis));
     }
@@ -400,7 +378,7 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         } else if (!ipdAuto) {
             eyeLocal = DirectX::XMVectorScale(eyeLocal, desiredIpd / runtimeIpd);
         }
-        eyeLocal = DirectX::XMVectorScale(eyeLocal, worldScale);
+        eyeLocal = DirectX::XMVectorScale(eyeLocal, trackingScale);
         totalOffset = DirectX::XMVectorAdd(
             totalOffset, DirectX::XMVector3Transform(
                              eyeLocal, DirectX::XMMatrixMultiply(kXrToCam, finalBasis)));

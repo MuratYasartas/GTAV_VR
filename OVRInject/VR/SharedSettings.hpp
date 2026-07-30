@@ -11,6 +11,8 @@ namespace VR {
 constexpr float kDefaultRenderScale = 1.0f;
 constexpr float kMinRequestedRenderScale = 0.5f;
 constexpr float kMaxRequestedRenderScale = 3.0f;
+constexpr float kMinWorldScale = 0.5f;
+constexpr float kMaxWorldScale = 3.0f;
 // Eye-texture caps: high enough to never clamp below the HMD's own
 // recommended resolution (Pimax Crystal Super: 5424x5356) on capable GPUs -
 // the renderScale slider must reach full PPD when the user asks for it.
@@ -28,6 +30,19 @@ inline float ClampRequestedRenderScale(float scale) {
         return kMaxRequestedRenderScale;
     }
     return scale;
+}
+
+// User-facing world scale means "how large the world appears".  A larger
+// world must therefore use a smaller tracked-meters/IPD baseline.  The old
+// implementation multiplied by worldScale, which made the world smaller and
+// also scaled manual camera trim, making the control both backwards and hard
+// to perceive.
+inline float ComputeTrackingMetersToGameScale(float worldScale) {
+    if (!std::isfinite(worldScale)) {
+        worldScale = 1.0f;
+    }
+    worldScale = (std::max)(kMinWorldScale, (std::min)(worldScale, kMaxWorldScale));
+    return 1.0f / worldScale;
 }
 
 inline float ComputeSafeRenderScale(float requestedScale, uint32_t baseWidth, uint32_t baseHeight) {
@@ -88,6 +103,9 @@ struct ReprojectionSettings {
     std::atomic<float> screenOffsetX{0.0f};
     std::atomic<float> screenOffsetY{0.0f};
     std::atomic<float> imageScale{1.0f};
+    // Compensate the runtime's asymmetric per-eye projection center
+    // automatically.  User X/Y values remain fine trim on top.
+    std::atomic<bool> autoImageAlignment{true};
 };
 
 struct StereoSettings {

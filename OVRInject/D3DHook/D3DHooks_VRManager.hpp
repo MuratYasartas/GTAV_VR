@@ -266,6 +266,7 @@ namespace VRMgr {
         repro.screenOffsetX.store(settings.imageOffsetX);
         repro.screenOffsetY.store(settings.imageOffsetY);
         repro.imageScale.store(settings.imageScale);
+        repro.autoImageAlignment.store(settings.imageAutoAlign);
 
         auto& comfort = VR::GetComfortSettings();
         comfort.snapTurning.store(settings.snapTurning);
@@ -844,6 +845,7 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         if (!game_window_) {
             return;
         }
+        scale = VR::ClampRequestedRenderScale(scale);
         const int size = (std::max)(400, static_cast<int>(1600.0f * scale + 0.5f));
         LOGSTRF("D3DHooks_VRManager: Game Resolution Scale %.2f - resizing game window toward %dx%d\n",
                 scale, size, size);
@@ -985,9 +987,13 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                                    uint32_t srcHeight,
                                    float eyeSign,
                                    float& outCropX,
-                                   float& outCropY) {
+                                   float& outCropY,
+                                   float& outAutoOffsetX,
+                                   float& outAutoOffsetY) {
         outCropX = 1.0f;
         outCropY = 1.0f;
+        outAutoOffsetX = 0.0f;
+        outAutoOffsetY = 0.0f;
         const float vfovB = VR::GetRuntimeStats().activeFov.load();
         VR::IVRBackend* backend = GetBackend();
         if (vfovB <= 1.0f || !backend || srcHeight == 0) {
@@ -1010,6 +1016,11 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         // than XR FOV): clamp, accepting the resulting over-zoom.
         outCropX = (std::max)(1.0f, outCropX);
         outCropY = (std::max)(1.0f, outCropY);
+        if (VR::GetReprojectionSettings().autoImageAlignment.load()) {
+            Stereo::ComputeProjectionCenterSampleOffsets(
+                proj.r[2].m128_f32[0], proj.r[2].m128_f32[1],
+                outCropX, outCropY, outAutoOffsetX, outAutoOffsetY);
+        }
     }
 
     static void ApplyBlitStates(ID3D11DeviceContext* context) {
@@ -1258,9 +1269,16 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
             if (angularCrop) {
                 float cropX = 1.0f;
                 float cropY = 1.0f;
-                ComputeAngularCrop(srcDesc.Width, srcDesc.Height, eyeSign, cropX, cropY);
+                float autoOffsetX = 0.0f;
+                float autoOffsetY = 0.0f;
+                ComputeAngularCrop(srcDesc.Width, srcDesc.Height, eyeSign,
+                                   cropX, cropY, autoOffsetX, autoOffsetY);
+                autoOffsetX /= (std::max)(scaleX, 0.01f);
+                autoOffsetY /= (std::max)(scaleY, 0.01f);
                 scaleX *= cropX;
                 scaleY *= cropY;
+                offsetX += autoOffsetX;
+                offsetY += autoOffsetY;
             }
             UpdateBlitParams(context, scaleX, scaleY, offsetX, offsetY);
         }
@@ -1910,9 +1928,8 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
                     LOGSTR("D3DHooks_VRManager: OpenXR backend manages its own swapchain format; skipping desktop swapchain resync\n");
                 }
 
-                float renderScale = VR::GetReprojectionSettings().renderScale.load();
-                if (renderScale < 0.5f) renderScale = 0.5f;
-                if (renderScale > 2.0f) renderScale = 2.0f;
+                const float renderScale = VR::ClampRequestedRenderScale(
+                    VR::GetReprojectionSettings().renderScale.load());
 
                 LOGSTR("D3DHooks_VRManager: Creating HMD renderer\n");
                 hmdRenderer = new HMDRenderer(pSwapChain, backend, renderScale, device, context);
@@ -2151,9 +2168,8 @@ float4 main(float4 pos : SV_POSITION, float2 tex : TEXCOORD) : SV_Target
         ID3D11DeviceContext* context = nullptr;
         backend->GetDevice()->GetImmediateContext(&context);
 
-        float renderScale = VR::GetReprojectionSettings().renderScale.load();
-        if (renderScale < 0.5f) renderScale = 0.5f;
-        if (renderScale > 2.0f) renderScale = 2.0f;
+        const float renderScale = VR::ClampRequestedRenderScale(
+            VR::GetReprojectionSettings().renderScale.load());
 
         hmdRenderer = new HMDRenderer(pSwapChain, backend, renderScale, backend->GetDevice(), context);
         if (context) {

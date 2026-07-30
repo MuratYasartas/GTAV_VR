@@ -7,6 +7,7 @@ rem What:  copies the GTAVR release set into a GTA V Legacy game directory:
 rem          - OVRInjectShim.dll installed AS dxgi.dll (the mod loader proxy,
 rem            ADR-0005; loaded by the game at startup, loads OVRInject.dll)
 rem          - OVRInject.dll, openvr_api.dll, openxr_loader.dll (if present)
+rem          - GTAVRBridge.asi (ScriptHookV camera/native bridge)
 rem          - manifests\ + a root copy of gtav_legacy.ini (the injected mod's
 rem            BuildManifest searches <game dir>\gtav_legacy.ini first)
 rem          - gtavr_settings.ini, gtavr_camera.ini
@@ -57,10 +58,10 @@ rem --- source release set -----------------------------------------------------
 set "REPO=%~dp0.."
 if defined GTAVR_DIST_DIR (
 	set "DIST=%GTAVR_DIST_DIR%"
-) else if exist "%REPO%\build_solution_out\OVRInject.dll" (
-	set "DIST=%REPO%\build_solution_out"
-) else (
+) else if exist "%REPO%\x64\Release\OVRInject.dll" (
 	set "DIST=%REPO%\x64\Release"
+) else (
+	set "DIST=%REPO%\build_solution_out"
 )
 echo %P% source dir: %DIST%>>"%LOG%"
 
@@ -70,6 +71,7 @@ set "OPENVR=%DIST%\openvr_api.dll"
 if not exist "%OPENVR%" set "OPENVR=%REPO%\ThirdParty\openvr\bin\x64\openvr_api.dll"
 set "OPENXR=%DIST%\openxr_loader.dll"
 if not exist "%OPENXR%" set "OPENXR=%REPO%\ThirdParty\openxr\bin\x64\openxr_loader.dll"
+set "BRIDGE=%REPO%\GTAVRBridge\x64\Release\GTAVRBridge.asi"
 
 if not exist "%SHIM%" (
 	echo %P% ERROR: !SHIM! not found - build Release^|x64 first.
@@ -79,6 +81,11 @@ if not exist "%SHIM%" (
 if not exist "%CORE%" (
 	echo %P% ERROR: !CORE! not found - build Release^|x64 first.
 	echo %P% ERROR: OVRInject.dll missing>>"!LOG!"
+	exit /b 1
+)
+if not exist "%BRIDGE%" (
+	echo %P% ERROR: !BRIDGE! not found - build GTAVRBridge Release^|x64 first.
+	echo %P% ERROR: GTAVRBridge.asi missing>>"!LOG!"
 	exit /b 1
 )
 
@@ -116,6 +123,7 @@ if exist "%DXGI%" (
 rem --- copy + verify each file ------------------------------------------------
 call :CopyVerify "%SHIM%" "%DXGI%" "dxgi.dll - OVRInjectShim proxy" || exit /b 1
 call :CopyVerify "%CORE%" "%GAME_DIR%\OVRInject.dll" "OVRInject.dll" || exit /b 1
+call :CopyVerify "%BRIDGE%" "%GAME_DIR%\GTAVRBridge.asi" "GTAVRBridge.asi" || exit /b 1
 call :CopyVerify "%OPENVR%" "%GAME_DIR%\openvr_api.dll" "openvr_api.dll" || exit /b 1
 if exist "%OPENXR%" (
 	call :CopyVerify "%OPENXR%" "%GAME_DIR%\openxr_loader.dll" "openxr_loader.dll" || exit /b 1
@@ -130,13 +138,26 @@ if not exist "%GAME_DIR%\manifests\" mkdir "%GAME_DIR%\manifests%"
 call :CopyVerify "%REPO%\manifests\gtav_legacy.ini" "%GAME_DIR%\manifests\gtav_legacy.ini" "manifests\gtav_legacy.ini" || exit /b 1
 call :CopyVerify "%REPO%\manifests\gtav_legacy.ini" "%GAME_DIR%\gtav_legacy.ini" "gtav_legacy.ini - root copy for BuildManifest" || exit /b 1
 
-call :CopyVerify "%REPO%\gtavr_settings.ini" "%GAME_DIR%\gtavr_settings.ini" "gtavr_settings.ini" || exit /b 1
-call :CopyVerify "%REPO%\gtavr_camera.ini" "%GAME_DIR%\gtavr_camera.ini" "gtavr_camera.ini" || exit /b 1
+call :CopyIfMissing "%REPO%\gtavr_settings.ini" "%GAME_DIR%\gtavr_settings.ini" "gtavr_settings.ini" || exit /b 1
+call :CopyIfMissing "%REPO%\gtavr_camera.ini" "%GAME_DIR%\gtavr_camera.ini" "gtavr_camera.ini" || exit /b 1
 
 echo %P% DONE. Start the game normally; watch gtavrInjectLog.txt in the game dir.
 echo %P% Reminder: STORY MODE ONLY. BattlEye must be OFF (Rockstar launcher setting).
 echo %P% DONE>>"%LOG%"
 exit /b 0
+
+rem --- preserve user-edited configuration on update --------------------------
+:CopyIfMissing
+set "SRC=%~1"
+set "DST=%~2"
+set "WHAT=%~3"
+if exist "%DST%" (
+	echo %P% preserved existing !WHAT!
+	echo %P% preserved existing !WHAT!>>"!LOG!"
+	exit /b 0
+)
+call :CopyVerify "%SRC%" "%DST%" "%WHAT%"
+exit /b %errorlevel%
 
 rem --- helper: copy one file and verify the bytes -----------------------------
 :CopyVerify

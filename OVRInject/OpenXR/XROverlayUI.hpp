@@ -33,17 +33,24 @@ struct OverlayInputState {
  * VR Settings structure - persisted to INI file
  */
 struct VRSettings {
+    int settingsVersion = 2;
+    // Preserved when the overlay rewrites the shared INI. These are consumed
+    // before overlay initialization by VRManager/Log, not edited in-headset.
+    std::string runtimeBackend;
+    bool verboseLogging = false;
+
     // World Scale
     float worldScale = 1.0f;
     float playerHeight = 1.7f;
 
     // Camera
     float cameraOffsetX = 0.0f;
-    float cameraOffsetY = 0.34f;
+    float cameraOffsetY = 0.0f;
     float cameraOffsetZ = 0.0f;
     float imageOffsetX = 0.0f;
     float imageOffsetY = 0.0f;
     float imageScale = 1.0f;
+    bool imageAutoAlign = true;
 
     // Camera FOV override
     bool fovOverride = false;

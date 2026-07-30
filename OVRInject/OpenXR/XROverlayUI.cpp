@@ -334,6 +334,9 @@ void XROverlayUI::Shutdown() {
 #ifdef HAS_IMGUI
     if (!initialized_) return;
 
+    if (saveDirty_) {
+        SaveSettings();
+    }
     UpdateMouseCapture(false);
 
     ImGui_ImplDX11_Shutdown();
@@ -353,6 +356,9 @@ void XROverlayUI::SetVisible(bool visible) {
 #ifdef HAS_IMGUI
     if (visible_ == visible) {
         return;
+    }
+    if (!visible && saveDirty_) {
+        SaveSettings();
     }
     visible_ = visible;
     VR::GetRuntimeStats().overlayVisible.store(visible);
@@ -459,7 +465,11 @@ void XROverlayUI::Render() {
         }
         ImGui::SameLine();
         if (ImGui::Button("Reset to Defaults")) {
+            const std::string runtimeBackend = settings_.runtimeBackend;
+            const bool verboseLogging = settings_.verboseLogging;
             settings_ = VRSettings();
+            settings_.runtimeBackend = runtimeBackend;
+            settings_.verboseLogging = verboseLogging;
             NotifySettingsChanged();
         }
     }
@@ -467,7 +477,6 @@ void XROverlayUI::Render() {
 
     // Debounced auto-save (see NotifySettingsChanged).
     if (saveDirty_ && lastChangeMs_ != 0 && GetTickCount64() - lastChangeMs_ > 2000) {
-        saveDirty_ = false;
         SaveSettings();
     }
 
@@ -582,14 +591,16 @@ void XROverlayUI::RenderWorldSettings() {
 
     bool changed = false;
 
-    changed |= ImGui::SliderFloat("World Scale", &settings_.worldScale, 0.5f, 2.0f, "%.2f");
-    ImGui::SetItemTooltip("Adjust the scale of the game world");
+    changed |= ImGui::SliderFloat("World Scale", &settings_.worldScale,
+                                  VR::kMinWorldScale, VR::kMaxWorldScale, "%.2f");
+    ImGui::SetItemTooltip("Apparent world size. 1.0 = physical scale; larger values make the world larger by reducing tracked movement and stereo baseline.");
 
     changed |= ImGui::SliderFloat("Player Height (m)", &settings_.playerHeight, 1.2f, 2.2f, "%.2f");
     ImGui::SetItemTooltip("Your real-world height for proper scaling");
 
     ImGui::Separator();
-    ImGui::Text("Camera Offset");
+    ImGui::Text("Camera Fine Trim");
+    ImGui::TextDisabled("Player head position is detected automatically by GTAVRBridge.");
 
     auto snapToStep = [](float value, float step) {
         if (step <= 0.0f) return value;
@@ -685,14 +696,16 @@ void XROverlayUI::RenderWorldSettings() {
     // Note: 1.0 unit = 1% of the image width/height (Stereo/ImageFit.hpp
     // kImageOffsetScale). Convergence needs double-digit units on AER -
     // the old +/-1 range (1%) was far too small to ever reach superposition.
-    bool offsetXChanged = ImGui::SliderFloat("Stereo Offset X", &settings_.imageOffsetX, -30.0f, 30.0f, "%.2f");
+    changed |= ImGui::Checkbox("Auto X/Y Alignment", &settings_.imageAutoAlign);
+    ImGui::SetItemTooltip("Uses each eye's OpenXR projection center automatically. Fine trim remains available below.");
+    bool offsetXChanged = ImGui::SliderFloat("X Fine Trim", &settings_.imageOffsetX, -30.0f, 30.0f, "%.2f");
     offsetXChanged |= nudgeButtons("StereoOffsetX", settings_.imageOffsetX, kImageStep, -100.0f, 100.0f);
     if (offsetXChanged) {
         settings_.imageOffsetX = clampValue(snapToStep(settings_.imageOffsetX, kImageStep), -100.0f, 100.0f);
         changed = true;
     }
 
-    bool offsetYChanged = ImGui::SliderFloat("Stereo Offset Y", &settings_.imageOffsetY, -15.0f, 15.0f, "%.2f");
+    bool offsetYChanged = ImGui::SliderFloat("Y Fine Trim", &settings_.imageOffsetY, -15.0f, 15.0f, "%.2f");
     offsetYChanged |= nudgeButtons("StereoOffsetY", settings_.imageOffsetY, kImageStep, -100.0f, 100.0f);
     if (offsetYChanged) {
         settings_.imageOffsetY = clampValue(snapToStep(settings_.imageOffsetY, kImageStep), -100.0f, 100.0f);
@@ -705,10 +718,11 @@ void XROverlayUI::RenderWorldSettings() {
         settings_.imageScale = clampValue(snapToStep(settings_.imageScale, kImageStep), 0.01f, 100.0f);
         changed = true;
     }
-    if (ImGui::Button("Recenter Image")) {
+    if (ImGui::Button("Reset Image")) {
         settings_.imageOffsetX = 0.0f;
         settings_.imageOffsetY = 0.0f;
         settings_.imageScale = 1.0f;
+        settings_.imageAutoAlign = true;
         changed = true;
     }
     ImGui::SameLine();
@@ -887,8 +901,24 @@ void XROverlayUI::RenderPerformanceSettings() {
 
     changed |= ImGui::SliderFloat("Render Scale", &settings_.renderScale, 0.5f, 3.0f, "%.2f");
     ImGui::SetItemTooltip("Adjust render resolution (lower = better performance, higher = sharper)");
+    if (VR::IVRBackend* activeBackend = VR::VRManager::Get().GetBackend()) {
+        const uint32_t baseWidth = activeBackend->GetRawRecommendedWidth();
+        const uint32_t baseHeight = activeBackend->GetRawRecommendedHeight();
+        float effectiveScale = 1.0f;
+        uint32_t effectiveWidth = 0;
+        uint32_t effectiveHeight = 0;
+        VR::ComputeSafeRenderSize(baseWidth, baseHeight, settings_.renderScale,
+                                  effectiveScale, effectiveWidth, effectiveHeight);
+        ImGui::TextDisabled("Actual per-eye target: %ux%u (%.2fx)",
+                            effectiveWidth, effectiveHeight, effectiveScale);
+        if (effectiveScale + 0.001f < settings_.renderScale) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                "Safety limit reached (48 MP / 8192 px per eye).");
+        }
+    }
     changed |= ImGui::SliderFloat("Game Resolution Scale", &settings_.gameResolutionScale, 0.5f, 3.0f, "%.2f");
     ImGui::SetItemTooltip("LIVE in-game resolution: resizes the game window (GTA re-renders at the new size). 1.0 = 1600x1600, higher = more pixels/sharper, lower = faster.");
+    ImGui::TextDisabled("The displayed 90 FPS is headset submit rate; use F11 p99 data to judge game-render cost.");
 
     ImGui::Separator();
     ImGui::Text("Stereo Reprojection (Fake 3D)");
@@ -1063,6 +1093,7 @@ bool XROverlayUI::LoadSettings(const char* filename) {
     }
 
     std::string line;
+    int loadedVersion = 0;
     while (std::getline(file, line)) {
         // Skip comments and empty lines
         if (line.empty() || line[0] == '#' || line[0] == ';') continue;
@@ -1079,8 +1110,13 @@ bool XROverlayUI::LoadSettings(const char* filename) {
         while (!value.empty() && isspace((unsigned char)value.front())) value.erase(0, 1);
         while (!value.empty() && isspace((unsigned char)value.back())) value.pop_back();
 
-        // Parse values
-        if (key == "worldScale") settings_.worldScale = std::stof(value);
+        // Parse values. A malformed user-edited line must never throw out of
+        // the injected DLL into the host game.
+        try {
+        if (key == "settingsVersion") loadedVersion = std::stoi(value);
+        else if (key == "backend") settings_.runtimeBackend = value;
+        else if (key == "verbose") settings_.verboseLogging = (value == "1" || value == "true");
+        else if (key == "worldScale") settings_.worldScale = std::stof(value);
         else if (key == "playerHeight") settings_.playerHeight = std::stof(value);
         else if (key == "cameraOffsetX") settings_.cameraOffsetX = std::stof(value);
         else if (key == "cameraOffsetY") settings_.cameraOffsetY = std::stof(value);
@@ -1088,6 +1124,7 @@ bool XROverlayUI::LoadSettings(const char* filename) {
         else if (key == "imageOffsetX") settings_.imageOffsetX = std::stof(value);
         else if (key == "imageOffsetY") settings_.imageOffsetY = std::stof(value);
         else if (key == "imageScale") settings_.imageScale = std::stof(value);
+        else if (key == "imageAutoAlign") settings_.imageAutoAlign = (value == "1" || value == "true");
         else if (key == "fovOverride") settings_.fovOverride = (value == "1" || value == "true");
         else if (key == "fovPerType") settings_.fovPerType = (value == "1" || value == "true");
         else if (key == "fovGlobal") settings_.fovGlobal = std::stof(value);
@@ -1143,10 +1180,36 @@ bool XROverlayUI::LoadSettings(const char* filename) {
         else if (key == "cutsceneScreenDistance") settings_.cutsceneScreenDistance = std::stof(value);
         else if (key == "cutsceneScreenScale") settings_.cutsceneScreenScale = std::stof(value);
         else if (key == "cutsceneScreenCurve") settings_.cutsceneScreenCurve = std::stof(value);
+        } catch (...) {
+            LOGSTRF("XROverlayUI: Ignoring invalid setting %s=%s\n",
+                    key.c_str(), value.c_str());
+        }
     }
 
+    bool migrated = false;
+    if (loadedVersion < 2) {
+        // v2 replaced compensating offsets with a head-bone camera anchor and
+        // runtime-derived projection-center alignment. Old hand-tuned values
+        // would apply the correction twice.
+        settings_.settingsVersion = 2;
+        settings_.cameraOffsetX = 0.0f;
+        settings_.cameraOffsetY = 0.0f;
+        settings_.imageOffsetX = 0.0f;
+        settings_.imageOffsetY = 0.0f;
+        settings_.imageAutoAlign = true;
+        migrated = true;
+        LOGSTR("XROverlayUI: Migrated settings to v2 (automatic head/image alignment)\n");
+    } else {
+        settings_.settingsVersion = loadedVersion;
+    }
     LOGSTRF("XROverlayUI: Loaded settings from %s\n", path.c_str());
-    NotifySettingsChanged();
+    if (on_settings_changed_) {
+        on_settings_changed_(settings_);
+    }
+    if (migrated) {
+        lastChangeMs_ = GetTickCount64();
+        saveDirty_ = true;
+    }
     return true;
 }
 
@@ -1160,6 +1223,11 @@ bool XROverlayUI::SaveSettings(const char* filename) {
 
     file << "# GTA VR Settings\n";
     file << "# Auto-generated - edit with care\n\n";
+    file << "settingsVersion=" << settings_.settingsVersion << "\n\n";
+    if (!settings_.runtimeBackend.empty()) {
+        file << "[Runtime]\n";
+        file << "backend=" << settings_.runtimeBackend << "\n\n";
+    }
 
     file << "[World]\n";
     file << "worldScale=" << settings_.worldScale << "\n";
@@ -1170,6 +1238,7 @@ bool XROverlayUI::SaveSettings(const char* filename) {
     file << "imageOffsetX=" << settings_.imageOffsetX << "\n";
     file << "imageOffsetY=" << settings_.imageOffsetY << "\n";
     file << "imageScale=" << settings_.imageScale << "\n\n";
+    file << "imageAutoAlign=" << (settings_.imageAutoAlign ? "1" : "0") << "\n\n";
 
     file << "[CameraFov]\n";
     file << "fovOverride=" << (settings_.fovOverride ? "1" : "0") << "\n";
@@ -1239,10 +1308,12 @@ bool XROverlayUI::SaveSettings(const char* filename) {
     file << "cutsceneScreenCurve=" << settings_.cutsceneScreenCurve << "\n\n";
 
     file << "[Debug]\n";
+    file << "verbose=" << (settings_.verboseLogging ? "1" : "0") << "\n";
     file << "showDebugInfo=" << (settings_.showDebugInfo ? "1" : "0") << "\n";
     file << "showControllerModels=" << (settings_.showControllerModels ? "1" : "0") << "\n";
 
     LOGSTRF("XROverlayUI: Saved settings to %s\n", path.c_str());
+    saveDirty_ = false;
     return true;
 }
 

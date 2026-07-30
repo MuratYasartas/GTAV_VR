@@ -276,6 +276,8 @@ _Pvt_Extensions
 *.exe
 *.out
 *.app
+__pycache__/
+*.py[cod]
 
 # --- Project-specific (GTAV VR) ---
 # Build intermediates/outputs not covered above

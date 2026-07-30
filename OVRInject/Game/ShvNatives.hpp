@@ -34,20 +34,36 @@ public:
     void Shutdown();
     bool IsAvailable() const { return state_ != nullptr; }
     const CamSnapshot& Snapshot() {
-        if (state_) {
-            snapshot_.coordX = state_->coord[0];
-            snapshot_.coordY = state_->coord[1];
-            snapshot_.coordZ = state_->coord[2];
-            snapshot_.rotX = state_->rot[0];
-            snapshot_.rotY = state_->rot[1];
-            snapshot_.rotZ = state_->rot[2];
-            snapshot_.fov = state_->fov;
-            snapshot_.relHeading = state_->relHeading;
-            snapshot_.relPitch = state_->relPitch;
-            snapshot_.pedHeadX = state_->pedHead[0];
-            snapshot_.pedHeadY = state_->pedHead[1];
-            snapshot_.pedHeadZ = state_->pedHead[2];
-            snapshot_.sequence = state_->stateSeq;
+        if (!state_) {
+            return snapshot_;
+        }
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            const uint32_t begin = state_->stateSeq;
+            if (begin & 1u) {
+                YieldProcessor();
+                continue;
+            }
+            MemoryBarrier();
+            CamSnapshot candidate;
+            candidate.coordX = state_->coord[0];
+            candidate.coordY = state_->coord[1];
+            candidate.coordZ = state_->coord[2];
+            candidate.rotX = state_->rot[0];
+            candidate.rotY = state_->rot[1];
+            candidate.rotZ = state_->rot[2];
+            candidate.fov = state_->fov;
+            candidate.relHeading = state_->relHeading;
+            candidate.relPitch = state_->relPitch;
+            candidate.pedHeadX = state_->pedHead[0];
+            candidate.pedHeadY = state_->pedHead[1];
+            candidate.pedHeadZ = state_->pedHead[2];
+            MemoryBarrier();
+            const uint32_t end = state_->stateSeq;
+            if (begin == end && !(end & 1u)) {
+                candidate.sequence = end;
+                snapshot_ = candidate;
+                break;
+            }
         }
         return snapshot_;
     }
@@ -101,6 +117,8 @@ private:
         uint32_t bridgeAlive;
         BridgeOp queue[64];
     };
+    static_assert(sizeof(BridgeState) == 1352,
+                  "GTAVR bridge ABI changed; bump magic and bridge layout");
 
     HANDLE mapping_ = nullptr;
     BridgeState* state_ = nullptr;

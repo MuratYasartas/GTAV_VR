@@ -8,7 +8,7 @@
 // native calls execute on the bridge's ScriptHookV script thread; this
 // class only reads the shared snapshot and pushes ops.
 //
-// Rotation conventions (GTA V, rotation order 2 = ZYX, degrees):
+// Rotation conventions (GTA V, rotation order 2, degrees):
 //   rx = pitch about cam-right (positive = look up)
 //   ry = roll  about cam-forward
 //   rz = yaw   about world-up  (0 = north/+Y, positive = counterclockwise)
@@ -66,6 +66,8 @@ private:
     uint32_t lastSnapSeq_ = 0;
     uint64_t lastBridgeRetryMs_ = 0;
     bool loggedFirstPose_ = false;
+    float lastHeadYawDeg_ = 0.0f;
+    bool haveLastHeadYaw_ = false;
 };
 
 } // namespace Game

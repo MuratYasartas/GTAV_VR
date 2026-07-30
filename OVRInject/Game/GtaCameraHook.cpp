@@ -1801,8 +1801,8 @@ XMFLOAT4 GtaCameraHook::ComputeCameraPosition(const GtaCameraMatrix& gameMatrix,
     auto& stereoSettings = VR::GetStereoSettings();
     auto& cameraSettings = VR::GetCameraSettings();
 
-    float worldScale = cameraSettings.worldScale.load();
-    if (worldScale < 0.01f) worldScale = 0.01f;
+    const float trackingScale = VR::ComputeTrackingMetersToGameScale(
+        cameraSettings.worldScale.load());
 
     XMVECTOR basePos = XMLoadFloat4(reinterpret_cast<const XMFLOAT4*>(gameMatrix.position));
     XMVECTOR totalOffset = XMVectorZero();
@@ -1818,7 +1818,7 @@ XMFLOAT4 GtaCameraHook::ComputeCameraPosition(const GtaCameraMatrix& gameMatrix,
         }
 
         XMVECTOR delta = XMVectorSubtract(headPos, reference_vr_position_);
-        delta = XMVectorScale(delta, worldScale);
+        delta = XMVectorScale(delta, trackingScale);
         XMVECTOR worldDelta = XMVector3Transform(delta, trackingToWorld);
         totalOffset = XMVectorAdd(totalOffset, worldDelta);
     } else {
@@ -1830,12 +1830,12 @@ XMFLOAT4 GtaCameraHook::ComputeCameraPosition(const GtaCameraMatrix& gameMatrix,
                                        cameraSettings.cameraOffsetY.load() + heightOffset,
                                        cameraSettings.cameraOffsetZ.load(),
                                        0.0f);
-    localOffset = XMVectorScale(localOffset, worldScale);
     XMVECTOR worldOffset = XMVector3Transform(localOffset, finalRotation);
     totalOffset = XMVectorAdd(totalOffset, worldOffset);
 
     if (applyEyeOffset) {
         float desiredIpd = stereoSettings.stereoIPD.load();
+        const bool ipdAuto = stereoSettings.ipdAuto.load();
         XMVECTOR eyeLocal = XMVectorZero();
         if (backend_) {
             XMMATRIX eyeMatrix = backend_->GetEyeMatrix(eye);
@@ -1849,12 +1849,12 @@ XMFLOAT4 GtaCameraHook::ComputeCameraPosition(const GtaCameraMatrix& gameMatrix,
         if (runtimeIpd < 0.0001f) {
             float sign = (eye == VR::Eye::Left) ? -0.5f : 0.5f;
             eyeLocal = XMVectorSet(sign * desiredIpd, 0.0f, 0.0f, 0.0f);
-        } else {
+        } else if (!ipdAuto) {
             float scale = desiredIpd / runtimeIpd;
             eyeLocal = XMVectorScale(eyeLocal, scale);
         }
 
-        eyeLocal = XMVectorScale(eyeLocal, worldScale);
+        eyeLocal = XMVectorScale(eyeLocal, trackingScale);
         XMVECTOR eyeWorld = XMVector3Transform(eyeLocal, finalRotation);
         totalOffset = XMVectorAdd(totalOffset, eyeWorld);
     }

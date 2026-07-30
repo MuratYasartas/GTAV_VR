@@ -28,10 +28,12 @@
 2. Copy the release files next to `GTA5.exe`:
    - `dxgi.dll` (the OVRInjectShim proxy — this is the mod loader),
    - `OVRInject.dll`, `openvr_api.dll` / `openxr_loader.dll` as shipped,
+   - `GTAVRBridge.asi` (the matching ScriptHookV camera bridge),
    - `manifests/`, `gtav_legacy.ini`, `gtavr_settings.ini`, `gtavr_camera.ini`.
    No game files are modified.
    (`tools\install.bat <game dir>` does exactly this — backs up any existing
-   `dxgi.dll` to `dxgi.dll.gtavr-backup`, verifies every copy, and
+   `dxgi.dll` to `dxgi.dll.gtavr-backup`, verifies every binary copy, preserves
+   existing user settings/camera INIs on updates, and
    `tools\uninstall.bat <game dir>` removes exactly those files and restores
    the backup. Both are idempotent.)
 3. Configure your OpenXR runtime (the installer/preflight reads the
@@ -43,6 +45,12 @@
 5. Start the game normally. First launch: the mod initializes on the first
    rendered frame; watch `gtavrInjectLog.txt` (override with
    `GTAVR_LOG_DIR`) for `VR initialized` or a human-readable refusal reason.
+
+For the development control-panel workflow, run `tools\GTAVR-Panel.bat`.
+Before injection, the panel verifies that the game-directory
+`GTAVRBridge.asi` and `OVRInject.dll` match the current build. If it shows
+`UPDATE REQUIRED`, close GTA, click **Update DLL + bridge**, and approve the
+single Windows UAC prompt. Injection stays disabled until both hashes match.
 
 ## 3. Uninstall
 
@@ -69,6 +77,11 @@ vanilla again — the proxy DLL is the only loader, and nothing else persists.
 - Env: `GTAVR_BACKEND=openxr|openvr`, `GTAVR_LOG_DIR`,
   `GTAVR_SETTINGS_DIR`, `XR_RUNTIME_JSON`, `GTAVR_VERBOSE=1` (debug channel).
 - In-headset: open the settings overlay (see comfort.md) — no alt-tab needed.
+- `Reset Image` restores automatic OpenXR X/Y alignment and clears only the
+  optional fine trim. `Recenter View` resets the current head direction immediately.
+- Render Scale shows the actual per-eye resolution. A requested value may stop
+  increasing at the displayed 48 MP / 8192-pixel safety limit; the headset's
+  90 Hz submit rate is not the GTA render rate, so use the F11 p99 report for cost.
 
 ## 6. Runtime posture (Pimax)
 

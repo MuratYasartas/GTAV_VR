@@ -83,7 +83,7 @@ if exist "%BACKUP%" (
 )
 
 rem --- payload + config files --------------------------------------------------
-for %%F in (OVRInject.dll openvr_api.dll openxr_loader.dll gtav_legacy.ini gtavr_settings.ini gtavr_camera.ini) do (
+for %%F in (OVRInject.dll GTAVRBridge.asi openvr_api.dll openxr_loader.dll gtav_legacy.ini gtavr_settings.ini gtavr_camera.ini) do (
 	if exist "!GAME_DIR!\%%F" (
 		del /f /q "!GAME_DIR!\%%F" >nul 2>&1
 		if exist "!GAME_DIR!\%%F" (
@@ -120,7 +120,7 @@ if exist "%GAME_DIR%\gtavr_install.log" (
 )
 
 rem --- verify the directory is clean -------------------------------------------
-for %%F in (dxgi.dll.gtavr-backup OVRInject.dll openvr_api.dll openxr_loader.dll gtav_legacy.ini gtavr_settings.ini gtavr_camera.ini gtavr_install.log manifests\gtav_legacy.ini) do (
+for %%F in (dxgi.dll.gtavr-backup OVRInject.dll GTAVRBridge.asi openvr_api.dll openxr_loader.dll gtav_legacy.ini gtavr_settings.ini gtavr_camera.ini gtavr_install.log manifests\gtav_legacy.ini) do (
 	if exist "!GAME_DIR!\%%F" (
 		echo %P% VERIFY-FAIL: %%F still present
 		set "DIRTY=1"

@@ -114,5 +114,24 @@ inline void ComputeUserImageOffsets(float screenOffsetX, float screenOffsetY,
     outOffsetY = screenOffsetY * kImageOffsetScale;
 }
 
+// A symmetric game camera renders its optical axis at source UV (0.5, 0.5),
+// while an OpenXR eye commonly has an asymmetric projection.  For the
+// DirectX off-center projection matrix, m20/m21 encode that lens center.
+// Return the source-sampling offsets that place the symmetric image center at
+// the runtime's projection center after the angular crop.  Manual alignment
+// is added separately as fine trim.
+inline void ComputeProjectionCenterSampleOffsets(float projectionM20,
+                                                 float projectionM21,
+                                                 float scaleX,
+                                                 float scaleY,
+                                                 float& outOffsetX,
+                                                 float& outOffsetY) {
+    const float safeX = scaleX > 0.01f ? scaleX : 0.01f;
+    const float safeY = scaleY > 0.01f ? scaleY : 0.01f;
+    outOffsetX = projectionM20 / (2.0f * safeX);
+    // Texture V grows down while projection NDC Y grows up.
+    outOffsetY = -projectionM21 / (2.0f * safeY);
+}
+
 } // namespace Stereo
 } // namespace OVRInject

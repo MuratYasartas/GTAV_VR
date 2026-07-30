@@ -156,6 +156,17 @@ clean give-up to mono, cheap periodic retry); the render thread adopts in O(1).
 
 - **IPD always from the runtime** (`xrLocateViews` eye poses / OpenVR eye-to-head), never
   a constant; world scale depends on it.
+- **Head pose is never low-pass filtered.** It is late-latched and composed at full
+  presentation cadence. Only game-owned/base motion may be smoothed; filtering the
+  final camera also filters the user's real head and is prohibited.
+- **Yaw recenter pivots at the current head position**, not the tracking-space origin.
+  Runtime recenter and the game-camera reference are consumed before the next camera
+  write, so the first post-recenter frame is already centered.
+- **World scale is physical and inverse:** tracked translation and runtime IPD are
+  multiplied by `1 / worldScale`; manual camera trim remains in game meters.
+- **Image X/Y alignment is projection-derived by default.** The asymmetric OpenXR
+  projection center (`m20/m21`) is converted to a per-eye sampling offset; UI values
+  are fine trim on top, not required calibration.
 - **Projection always from runtime FOV** (`XrFovToProjectionMatrixD3D`), asymmetric,
   never the game's own projection. Near/far per-title (manifest).
 - **Late-latch**: pose sampled immediately before camera write + submission. The game
@@ -201,6 +212,9 @@ public:
 - INI (no new dependencies), three tiers, later wins: shipped defaults < per-title profile
   (`manifests/<title>.ini` + `gtavr_settings.ini` sections) < user override
   (`GTAVR_SETTINGS_DIR` or beside GTA5.exe).
+- `settingsVersion=2` migrates obsolete pre-head-anchor X/Y compensation to neutral
+  values and enables runtime-derived image alignment. Overlay edits auto-save after a
+  two-second debounce; loading alone never marks the file dirty.
 - Hot-reload: settings re-read on file-change tick (checked once per second from the
   Present hook); camera/manifest patterns are load-once at resolve time.
 - Runtime selection: `GTAVR_BACKEND=openxr|openvr`, `XR_RUNTIME_JSON` passthrough.
