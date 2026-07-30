@@ -13,6 +13,7 @@
 
 #include "../Vive/Math/Matrices.h"
 
+#include <array>
 #include <memory>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -71,7 +72,11 @@ public:
      * @param texture D3D11 texture containing the eye view
      * @param time Frame time (for timing/synchronization)
      */
-    OVR_API void SubmitFrameTexture(int eye_index, ID3D11Texture2D* texture, const unsigned int& time);
+    OVR_API void SubmitFrameTexture(
+        int eye_index,
+        ID3D11Texture2D* texture,
+        const unsigned int& time,
+        const XMMATRIX* rendered_pose = nullptr);
 
     /**
      * Begin a new VR frame
@@ -261,7 +266,7 @@ private:
     /**
      * Copy texture to swapchain image
      */
-    void CopyTextureToSwapchain(ID3D11Texture2D* source, XR::Eye eye);
+    bool CopyTextureToSwapchain(ID3D11Texture2D* source, XR::Eye eye);
 
     /**
      * Keyboard overlay toggle (Delete/Insert/F10), polled every frame
@@ -323,6 +328,9 @@ private:
     bool frame_in_progress_ = false;
     bool should_render_ = false;
     bool views_valid_ = false;
+    std::array<XrPosef, 2> submitted_view_poses_ = {
+        XR::IdentityPose(), XR::IdentityPose()};
+    std::array<bool, 2> submitted_view_pose_valid_ = {false, false};
 
     // Settings
     bool desktop_mirroring_ = true;

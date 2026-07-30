@@ -119,6 +119,24 @@ inline XMMATRIX XrPoseToMatrix(const XrPosef& pose) {
     return rotationMatrix * translationMatrix;
 }
 
+// Convert a rigid DirectX row-vector pose matrix back to OpenXR form.
+inline XrPosef MatrixToXrPose(const XMMATRIX& matrix) {
+    XrPosef pose{};
+    pose.orientation.w = 1.0f;
+    XMMATRIX rotation = matrix;
+    rotation.r[3] = XMVectorSet(0, 0, 0, 1);
+    XMVECTOR orientation = XMQuaternionNormalize(
+        XMQuaternionRotationMatrix(rotation));
+    pose.orientation = {
+        XMVectorGetX(orientation), XMVectorGetY(orientation),
+        XMVectorGetZ(orientation), XMVectorGetW(orientation)};
+    pose.position = {
+        matrix.r[3].m128_f32[0],
+        matrix.r[3].m128_f32[1],
+        matrix.r[3].m128_f32[2]};
+    return pose;
+}
+
 // Convert XrPosef to view matrix (inverted for camera)
 inline XMMATRIX XrPoseToViewMatrix(const XrPosef& pose) {
     XMMATRIX poseMatrix = XrPoseToMatrix(pose);

@@ -5,6 +5,51 @@
 namespace OVRInject {
 namespace XR {
 
+inline XrQuaternionf ComposeQuaternions(
+    const XrQuaternionf& a, const XrQuaternionf& b) {
+    const XMVECTOR qa = XMVectorSet(a.x, a.y, a.z, a.w);
+    const XMVECTOR qb = XMVectorSet(b.x, b.y, b.z, b.w);
+    // XMQuaternionMultiply(Q1,Q2) concatenates Q1 followed by Q2
+    // (algebraically Q2*Q1). Reverse its arguments for algebraic a*b.
+    const XMVECTOR result = XMQuaternionMultiply(qb, qa);
+    return {
+        XMVectorGetX(result), XMVectorGetY(result),
+        XMVectorGetZ(result), XMVectorGetW(result)};
+}
+
+inline XrPosef ComposePoses(const XrPosef& a, const XrPosef& b) {
+    XrPosef out = IdentityPose();
+    out.orientation = ComposeQuaternions(a.orientation, b.orientation);
+
+    const XMVECTOR qa = XMVectorSet(
+        a.orientation.x, a.orientation.y, a.orientation.z, a.orientation.w);
+    const XMVECTOR bp = XMVectorSet(
+        b.position.x, b.position.y, b.position.z, 0.0f);
+    const XMVECTOR rotated = XMVector3Rotate(bp, qa);
+    out.position.x = a.position.x + XMVectorGetX(rotated);
+    out.position.y = a.position.y + XMVectorGetY(rotated);
+    out.position.z = a.position.z + XMVectorGetZ(rotated);
+    return out;
+}
+
+inline XrPosef InvertPose(const XrPosef& pose) {
+    XrPosef out = IdentityPose();
+    const XMVECTOR q = XMVectorSet(
+        pose.orientation.x, pose.orientation.y,
+        pose.orientation.z, pose.orientation.w);
+    const XMVECTOR inverse = XMQuaternionInverse(q);
+    out.orientation = {
+        XMVectorGetX(inverse), XMVectorGetY(inverse),
+        XMVectorGetZ(inverse), XMVectorGetW(inverse)};
+
+    const XMVECTOR negativePosition = XMVectorSet(
+        -pose.position.x, -pose.position.y, -pose.position.z, 0.0f);
+    const XMVECTOR rotated = XMVector3Rotate(negativePosition, inverse);
+    out.position = {
+        XMVectorGetX(rotated), XMVectorGetY(rotated), XMVectorGetZ(rotated)};
+    return out;
+}
+
 // Build a yaw-only recenter transform that keeps the current head position
 // fixed. Applying a pure yaw about tracking origin makes an off-origin head
 // travel on an arc; the compensating translation makes the head itself the

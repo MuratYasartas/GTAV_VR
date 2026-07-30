@@ -356,8 +356,9 @@ class Panel(tk.Tk):
         self.run_bg(work)
 
     def open_log_folder(self):
-        p = newest_log() or LOGDIR
-        subprocess.Popen(["explorer", os.path.dirname(p)])
+        p = newest_log()
+        folder = os.path.dirname(p) if p else LOGDIR
+        subprocess.Popen(["explorer", folder])
 
     def collect(self):
         self.run_bg(lambda: self.say(

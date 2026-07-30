@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdint>
 #include <Windows.h>
+#include "ShvBridgeShared.hpp"
 
 namespace OVRInject {
 namespace Game {
@@ -32,13 +33,13 @@ public:
     // not loaded in the game (ASI loader absent).
     bool Initialize();
     void Shutdown();
-    bool IsAvailable() const { return state_ != nullptr; }
+    bool IsAvailable() const;
     const CamSnapshot& Snapshot() {
-        if (!state_) {
+        if (!IsAvailable()) {
             return snapshot_;
         }
         for (int attempt = 0; attempt < 4; ++attempt) {
-            const uint32_t begin = state_->stateSeq;
+            const uint32_t begin = ShvBridge::LoadAcquire(&state_->stateSeq);
             if (begin & 1u) {
                 YieldProcessor();
                 continue;
@@ -58,7 +59,7 @@ public:
             candidate.pedHeadY = state_->pedHead[1];
             candidate.pedHeadZ = state_->pedHead[2];
             MemoryBarrier();
-            const uint32_t end = state_->stateSeq;
+            const uint32_t end = ShvBridge::LoadAcquire(&state_->stateSeq);
             if (begin == end && !(end & 1u)) {
                 candidate.sequence = end;
                 snapshot_ = candidate;
@@ -72,56 +73,23 @@ public:
     // thread, fire-and-forget).
     void SetRawYawPitch(float yawDeg, float pitchDeg);
     void SetRelativeHeadingPitch(float headingDeg, float pitchDeg, float clampValue);
-    void CamCreate();
-    int  LastCreatedCam() const { return state_ ? state_->lastCreateResult : 0; }
-    void CamSetCoord(int cam, float x, float y, float z);
-    void CamSetRot(int cam, float x, float y, float z);
-    void CamSetFov(int cam, float fov);
-    void CamSetActive(int cam, bool active);
-    void CamRender(int cam, bool render);
-    void CamDestroy(int cam);
+    bool CamCreate();
+    int LastCreatedCam() const;
+    bool CamSetTransform(
+        int cam,
+        float x, float y, float z,
+        float pitch, float roll, float yaw);
+    bool CamSetFov(int cam, float fov);
+    bool CamSetEnabled(int cam, bool enabled);
+    bool CamDestroy(int cam);
 
 private:
     ShvNatives() = default;
-    void PushOp(uint32_t type, int cam, float a, float b, float c);
-
-    enum OpType : uint32_t {
-        OpSetRawYawPitch = 1,
-        OpSetRelativeHeadingPitch,
-        OpCamCreate,
-        OpCamSetCoord,
-        OpCamSetRot,
-        OpCamSetFov,
-        OpCamSetActive,
-        OpCamRender,
-        OpCamDestroy,
-    };
-
-    struct BridgeOp {
-        uint32_t type;
-        int32_t cam;
-        float a, b, c;
-    };
-    struct BridgeState {
-        uint32_t magic;
-        uint32_t stateSeq;
-        float coord[3];
-        float rot[3];
-        float fov;
-        float relHeading;
-        float relPitch;
-        float pedHead[3];
-        uint32_t qHead;
-        uint32_t qTail;
-        int32_t lastCreateResult;
-        uint32_t bridgeAlive;
-        BridgeOp queue[64];
-    };
-    static_assert(sizeof(BridgeState) == 1352,
-                  "GTAVR bridge ABI changed; bump magic and bridge layout");
+    bool PushOp(uint32_t type, int cam, float a, float b, float c);
+    bool PushOps(const ShvBridge::BridgeOp* operations, uint32_t count);
 
     HANDLE mapping_ = nullptr;
-    BridgeState* state_ = nullptr;
+    ShvBridge::BridgeState* state_ = nullptr;
     CamSnapshot snapshot_{};
     std::atomic<uint32_t> lastLoggedSeq_{0};
 };

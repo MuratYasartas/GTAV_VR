@@ -42,6 +42,7 @@
 #include "../VR/IVRBackend.hpp"
 #include "../VR/SharedSettings.hpp"
 #include "EyeDelivery.hpp"
+#include "RenderPoseHistory.hpp"
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -169,6 +170,7 @@ private:
     DirectX::XMMATRIX headPoseLatched_ = DirectX::XMMatrixIdentity();
 
     EyeDelivery eyeDelivery_;                  // AER parity + delivery planner
+    RenderPoseHistory renderPoseHistory_;       // pose actually stored in each eye texture
     int effectiveMode_ = static_cast<int>(VR::StereoMode::AlternateEye);
     int lastLoggedMode_ = -1;
 

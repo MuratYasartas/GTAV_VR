@@ -248,25 +248,117 @@ static bool UpdateMouseInput(ImGuiIO& io,
 
 static std::string ResolveSettingsPath(const char* filename) {
     char path[MAX_PATH] = {};
-    DWORD len = GetEnvironmentVariableA("GTAVR_SETTINGS_DIR", path, MAX_PATH);
+    DWORD len = GetEnvironmentVariableA("GTAVR_SETTINGS_PATH", path, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return std::string(path);
+    }
+
+    len = GetEnvironmentVariableA("GTAVR_SETTINGS_DIR", path, MAX_PATH);
     if (len > 0 && len < MAX_PATH) {
         std::string full(path);
         if (!full.empty() && full.back() != '\\' && full.back() != '/') {
             full.push_back('\\');
         }
         full += filename;
-        DWORD attrs = GetFileAttributesA(full.c_str());
-        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-            return full;
+        return full;
+    }
+
+    // Injection cannot modify the environment of an already-running GTA
+    // process. Resolve beside the actual OVRInject module, not against the
+    // host process working directory. This matches both direct injection
+    // from x64\Release and proxy loading from the game directory.
+    HMODULE module = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&ResolveSettingsPath),
+            &module)) {
+        DWORD moduleLen = GetModuleFileNameA(module, path, MAX_PATH);
+        if (moduleLen > 0 && moduleLen < MAX_PATH) {
+            std::string full(path, moduleLen);
+            const size_t slash = full.find_last_of("\\/");
+            if (slash != std::string::npos) {
+                full.resize(slash + 1);
+                full += filename;
+                return full;
+            }
         }
     }
 
-    len = GetEnvironmentVariableA("GTAVR_SETTINGS_PATH", path, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) {
-        return std::string(path);
-    }
-
     return std::string(filename);
+}
+
+static float ClampFinite(
+    float value, float minimum, float maximum, float fallback) {
+    if (!std::isfinite(value)) {
+        return fallback;
+    }
+    return (std::max)(minimum, (std::min)(maximum, value));
+}
+
+static void SanitizeSettings(VRSettings& settings) {
+    const VRSettings defaults;
+    settings.worldScale = ClampFinite(settings.worldScale, 0.5f, 3.0f, defaults.worldScale);
+    settings.playerHeight = ClampFinite(settings.playerHeight, 1.2f, 2.2f, defaults.playerHeight);
+    settings.cameraOffsetX = ClampFinite(settings.cameraOffsetX, -1.0f, 1.0f, defaults.cameraOffsetX);
+    settings.cameraOffsetY = ClampFinite(settings.cameraOffsetY, -1.0f, 1.0f, defaults.cameraOffsetY);
+    settings.cameraOffsetZ = ClampFinite(settings.cameraOffsetZ, -1.0f, 1.0f, defaults.cameraOffsetZ);
+    settings.imageOffsetX = ClampFinite(settings.imageOffsetX, -100.0f, 100.0f, defaults.imageOffsetX);
+    settings.imageOffsetY = ClampFinite(settings.imageOffsetY, -100.0f, 100.0f, defaults.imageOffsetY);
+    settings.imageScale = ClampFinite(settings.imageScale, 0.01f, 100.0f, defaults.imageScale);
+
+    settings.fovGlobal = ClampFinite(settings.fovGlobal, 1.0f, 130.0f, defaults.fovGlobal);
+    settings.fovFpPed = ClampFinite(settings.fovFpPed, 1.0f, 130.0f, defaults.fovFpPed);
+    settings.fovTpPed = ClampFinite(settings.fovTpPed, 1.0f, 130.0f, defaults.fovTpPed);
+    settings.fovTpAim = ClampFinite(settings.fovTpAim, 1.0f, 130.0f, defaults.fovTpAim);
+    settings.fovFpVehicle = ClampFinite(settings.fovFpVehicle, 1.0f, 130.0f, defaults.fovFpVehicle);
+    settings.fovTpVehicle = ClampFinite(settings.fovTpVehicle, 1.0f, 130.0f, defaults.fovTpVehicle);
+    settings.fovManualOffset = (std::max)(0, (std::min)(4096, settings.fovManualOffset));
+
+    settings.stereoMode = (std::max)(0, (std::min)(1, settings.stereoMode));
+    settings.stereoIPD = ClampFinite(settings.stereoIPD, 0.04f, 0.08f, defaults.stereoIPD);
+    settings.headPredictMs = ClampFinite(settings.headPredictMs, 0.0f, 50.0f, defaults.headPredictMs);
+    settings.snapTurnAngle = ClampFinite(settings.snapTurnAngle, 15.0f, 90.0f, defaults.snapTurnAngle);
+    settings.vignetteIntensity = ClampFinite(settings.vignetteIntensity, 0.1f, 1.0f, defaults.vignetteIntensity);
+    settings.smoothTurnSpeed = ClampFinite(settings.smoothTurnSpeed, 30.0f, 360.0f, defaults.smoothTurnSpeed);
+
+    settings.renderScale = ClampFinite(settings.renderScale, 0.5f, 3.0f, defaults.renderScale);
+    settings.gameResolutionScale = ClampFinite(
+        settings.gameResolutionScale, 0.5f, 3.0f, defaults.gameResolutionScale);
+    settings.reprojectionIPD = ClampFinite(settings.reprojectionIPD, 0.0f, 0.12f, defaults.reprojectionIPD);
+    settings.reprojectionDepthScale = ClampFinite(
+        settings.reprojectionDepthScale, 0.0f, 0.1f, defaults.reprojectionDepthScale);
+    settings.reprojectionDepthBias = ClampFinite(
+        settings.reprojectionDepthBias, -1.0f, 1.0f, defaults.reprojectionDepthBias);
+
+    settings.triggerThreshold = ClampFinite(settings.triggerThreshold, 0.1f, 0.9f, defaults.triggerThreshold);
+    settings.gripThreshold = ClampFinite(settings.gripThreshold, 0.1f, 0.9f, defaults.gripThreshold);
+    settings.headLookMaxAngle = ClampFinite(settings.headLookMaxAngle, 5.0f, 60.0f, defaults.headLookMaxAngle);
+    settings.headLookDeadzone = ClampFinite(settings.headLookDeadzone, 0.0f, 10.0f, defaults.headLookDeadzone);
+    settings.headLookSensitivity = ClampFinite(
+        settings.headLookSensitivity, 10.0f, 1200.0f, defaults.headLookSensitivity);
+
+    settings.decouplingMode = (std::max)(0, (std::min)(2, settings.decouplingMode));
+    settings.decouplingMaxPitch = ClampFinite(
+        settings.decouplingMaxPitch, 30.0f, 90.0f, defaults.decouplingMaxPitch);
+    settings.decouplingMaxYaw = ClampFinite(
+        settings.decouplingMaxYaw, 30.0f, 180.0f, defaults.decouplingMaxYaw);
+    settings.decouplingAimCone = ClampFinite(
+        settings.decouplingAimCone, 10.0f, 60.0f, defaults.decouplingAimCone);
+
+    settings.cutsceneMode = (std::max)(0, (std::min)(2, settings.cutsceneMode));
+    settings.cutsceneScreenDistance = ClampFinite(
+        settings.cutsceneScreenDistance, 1.0f, 10.0f, defaults.cutsceneScreenDistance);
+    settings.cutsceneScreenScale = ClampFinite(
+        settings.cutsceneScreenScale, 1.0f, 6.0f, defaults.cutsceneScreenScale);
+    settings.cutsceneScreenCurve = ClampFinite(
+        settings.cutsceneScreenCurve, 0.0f, 1.0f, defaults.cutsceneScreenCurve);
+    settings.overlayDistance = ClampFinite(
+        settings.overlayDistance, 0.5f, 3.0f, defaults.overlayDistance);
+    settings.overlayScale = ClampFinite(
+        settings.overlayScale, 0.5f, 2.0f, defaults.overlayScale);
+    settings.overlayOpacity = ClampFinite(
+        settings.overlayOpacity, 0.3f, 1.0f, defaults.overlayOpacity);
 }
 
 //-----------------------------------------------------------------------------
@@ -1202,6 +1294,7 @@ bool XROverlayUI::LoadSettings(const char* filename) {
     } else {
         settings_.settingsVersion = loadedVersion;
     }
+    SanitizeSettings(settings_);
     LOGSTRF("XROverlayUI: Loaded settings from %s\n", path.c_str());
     if (on_settings_changed_) {
         on_settings_changed_(settings_);
@@ -1311,6 +1404,12 @@ bool XROverlayUI::SaveSettings(const char* filename) {
     file << "verbose=" << (settings_.verboseLogging ? "1" : "0") << "\n";
     file << "showDebugInfo=" << (settings_.showDebugInfo ? "1" : "0") << "\n";
     file << "showControllerModels=" << (settings_.showControllerModels ? "1" : "0") << "\n";
+
+    file.flush();
+    if (!file.good()) {
+        LOGSTRF("XROverlayUI: Failed while writing settings to %s\n", path.c_str());
+        return false;
+    }
 
     LOGSTRF("XROverlayUI: Saved settings to %s\n", path.c_str());
     saveDirty_ = false;

@@ -29,7 +29,11 @@ public:
 
     bool BeginFrame() override;
     void EndFrame() override;
-    void SubmitEyeTexture(Eye eye, ID3D11Texture2D* texture) override;
+    void SubmitEyeTexture(
+        Eye eye,
+        ID3D11Texture2D* texture,
+        const XMMATRIX* renderedPose = nullptr) override;
+    bool PrepareForCameraWrite() override;
 
     XMMATRIX GetHeadPoseMatrix() const override;
     XMFLOAT3 GetHeadPosition() const override;
@@ -69,8 +73,8 @@ private:
     /**
      * Refresh the cached tracked device poses.
      * WaitGetPoses blocks on compositor timing, so it runs at most once per
-     * frame (frame_counter_ advances in BeginFrame); all pose getters read
-     * this snapshot instead of calling WaitGetPoses themselves.
+     * rendered frame. frame_counter_ advances in PrepareForCameraWrite after
+     * submission; all pose getters otherwise read that stable snapshot.
      */
     void UpdatePoseCache() const;
 

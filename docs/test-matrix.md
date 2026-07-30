@@ -8,7 +8,7 @@ ratio. Averages are not accepted.
 
 | ID | Test | Mechanism | Status |
 |---|---|---|---|
-| A1 | Matrix math unit tests (projection oracle, eye-view composition, IPD, layout, handedness) + AER eye-delivery state machine (`Stereo/EyeDelivery.hpp`: per-frame layer→texture mapping, no-cross-eye invariant, missed-frame parity, reset/warmup) | `tests/GTAVRTests` exe | **PASS 21/21 (229 checks)** |
+| A1 | Matrix math unit tests (projection oracle, eye-view composition, GTA ROT_ZXY oracle, repeated recenter), AER eye-delivery + render-pose history, bridge SPSC queue, IPD, layout and handedness | `tests/GTAVRTests` exe | **PASS 55/55 (863 checks)** |
 | A2 | Golden-image determinism (slice, fixed seed) | `samples/D3D11Cube` golden mode + `check_golden.py` | **PASS** (40 frames byte-identical) |
 | A3 | Stereo-correctness: parallax sign & magnitude vs known depths | disparity analysis in `check_golden.py` (near cube z=1m shifts > far z=10m, correct direction for IPD sign) | **PASS** (+40.4 / +11.0 / +3.2 px, theory-matching) |
 | A4 | Injection lifecycle (inject → hook/inert → clean exit, zero crashes) | `tests/injection_lifecycle.py` vs slice app | **PASS 20/20** — inert-clean every run (slice creates its device in <1 s so the hook is structurally unreachable there; watchdog exit clean; hook-success on the real game UNVERIFIED) |

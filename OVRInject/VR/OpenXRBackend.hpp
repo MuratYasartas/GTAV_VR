@@ -28,7 +28,10 @@ public:
 
     bool BeginFrame() override;
     void EndFrame() override;
-    void SubmitEyeTexture(Eye eye, ID3D11Texture2D* texture) override;
+    void SubmitEyeTexture(
+        Eye eye,
+        ID3D11Texture2D* texture,
+        const XMMATRIX* renderedPose = nullptr) override;
 
     XMMATRIX GetHeadPoseMatrix() const override;
     XMFLOAT3 GetHeadPosition() const override;

@@ -53,9 +53,14 @@ bool OpenVRBackend::Initialize(ID3D11Device* device) {
 		hmd_ = nullptr;
 		LOGSTRF("OpenVRBackend Initialize error: %s", vr::VR_GetVRInitErrorAsEnglishDescription(error));
 		return false;
-	}
+    }
 
     initialized_ = true;
+    if (vr::VRCompositor()) {
+        // Recenter() resets the seated origin; WaitGetPoses must use that same
+        // universe or ResetZeroPose would have no effect on returned poses.
+        vr::VRCompositor()->SetTrackingSpace(vr::TrackingUniverseSeated);
+    }
     LOGSTR("OpenVRBackend: Initialized\n");
 
     return true;
@@ -81,6 +86,10 @@ void OpenVRBackend::Shutdown() {
 
     initialized_ = false;
     device_ = nullptr;
+    pose_cache_valid_ = false;
+    pose_cache_frame_ = 0;
+    frame_counter_ = 0;
+    previous_buttons_ = {};
 
     LOGSTR("OpenVRBackend: Shutdown\n");
 }
@@ -96,14 +105,7 @@ bool OpenVRBackend::IsInitialized() const {
 bool OpenVRBackend::BeginFrame() {
     if (!IsInitialized()) return false;
 
-    // New frame: advance the counter so the pose cache refreshes once.
-    ++frame_counter_;
-
     UpdateAsyncReprojectionSetting();
-
-    // OpenVR frame timing is handled internally by HMDRenderer
-    // SyncOnPoses is called separately
-    UpdateControllers();
 
     return true;
 }
@@ -113,7 +115,11 @@ void OpenVRBackend::EndFrame() {
     // via HMDRenderer's async queue
 }
 
-void OpenVRBackend::SubmitEyeTexture(Eye eye, ID3D11Texture2D* texture) {
+void OpenVRBackend::SubmitEyeTexture(
+    Eye eye,
+    ID3D11Texture2D* texture,
+    const XMMATRIX* renderedPose) {
+    (void)renderedPose; // OpenVR Submit has no explicit per-layer pose field.
     if (!IsInitialized() || !texture) return;
 
 	vr::Texture_t vr_texture = { (void*)texture, vr::TextureType_DirectX, vr::ColorSpace_Gamma };
@@ -126,6 +132,16 @@ void OpenVRBackend::SubmitEyeTexture(Eye eye, ID3D11Texture2D* texture) {
 			        static_cast<int>(eye), static_cast<int>(err), submitErrorCount);
 		}
 	}
+}
+
+bool OpenVRBackend::PrepareForCameraWrite() {
+    if (!IsInitialized()) return false;
+    // WaitGetPoses is deliberately after Submit: its returned pose is written
+    // to GTA for the NEXT game render, and remains the compositor's latest
+    // render pose until that image is submitted on the following Present.
+    ++frame_counter_;
+    UpdatePoseCache();
+    return pose_cache_valid_;
 }
 
 void OpenVRBackend::UpdateAsyncReprojectionSetting() {
@@ -251,8 +267,6 @@ void OpenVRBackend::UpdateControllers() {
     if (!IsInitialized()) return;
 
     auto& input = VR::GetInputSettings();
-
-    UpdatePoseCache();
 
     controller_indices_[static_cast<size_t>(Hand::Left)] = vr::k_unTrackedDeviceIndexInvalid;
     controller_indices_[static_cast<size_t>(Hand::Right)] = vr::k_unTrackedDeviceIndexInvalid;

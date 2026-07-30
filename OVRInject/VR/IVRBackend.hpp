@@ -152,7 +152,18 @@ public:
      * @param eye Which eye
      * @param texture D3D11 texture containing rendered view
      */
-    virtual void SubmitEyeTexture(Eye eye, ID3D11Texture2D* texture) = 0;
+    virtual void SubmitEyeTexture(
+        Eye eye,
+        ID3D11Texture2D* texture,
+        const XMMATRIX* renderedPose = nullptr) = 0;
+
+    /**
+     * Refresh tracking at the latest safe point before the camera write.
+     * OpenXR already locates predicted views in BeginFrame. OpenVR overrides
+     * this so WaitGetPoses happens after submitting the image rendered from
+     * the previous pose, keeping compositor timing and game rendering paired.
+     */
+    virtual bool PrepareForCameraWrite() { return false; }
 
     //-------------------------------------------------------------------------
     // Tracking - Head

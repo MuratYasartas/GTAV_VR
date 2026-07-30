@@ -297,6 +297,7 @@ StereoEngine& StereoEngine::Get() {
 
 void StereoEngine::Initialize(VR::IVRBackend* backend) {
     eyeDelivery_.Reset();
+    renderPoseHistory_.Reset();
     lastLoggedMode_ = -1;
     loggedBackbuffer_ = false;
     horizonLockEngaged_ = false;
@@ -443,6 +444,13 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         return services.originalPresent(pSwapChain, syncInterval, flags);
     }
 
+    // Only consume requests that existed before BeginFrame. Runtime recenter
+    // changes made later in this frame become visible to tracking on the next
+    // BeginFrame; rebuilding the game-camera reference immediately would use
+    // the stale cached pose and permanently preserve the old yaw.
+    bool recenterForCamera =
+        VR::GetStereoSettings().recenterRequested.exchange(false);
+
     backend->UpdateControllers();
     if (services.applySnapTurning) {
         services.applySnapTurning(backend);
@@ -450,12 +458,14 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
 
     Game::GtaCameraHook* cameraHook = services.cameraHook;
     Game::VRCamera* vrCamera = services.vrCamera;
-    const bool vrCameraReady = vrCamera && vrCamera->IsAvailable();
-    bool cameraReady = (cameraHook && cameraHook->IsReady()) || vrCameraReady;
+    const bool vrCameraAvailable = vrCamera && vrCamera->IsAvailable();
+    const bool vrCameraReady = vrCameraAvailable && vrCamera->IsEngaged();
+    bool cameraReady = vrCameraReady ||
+        (!vrCameraAvailable && cameraHook && cameraHook->IsReady());
     // The scripted camera owns the view: idle the memory hook's worker
     // (without this it spins at 100% of a core - see GtaCameraHook.hpp).
     if (cameraHook) {
-        cameraHook->SetStandby(vrCameraReady);
+        cameraHook->SetStandby(vrCameraAvailable);
     }
 
     if (services.cameraFov) {
@@ -612,6 +622,16 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     const EyeDelivery::FramePlan aerPlan = eyeDelivery_.PlanAlternateEye();
     VR::Eye renderEye = static_cast<VR::Eye>(aerPlan.renderEye);
 
+    // The current backbuffer was rendered from the pose written at the end of
+    // the previous completed Present. Attach that pending pose to the texture
+    // which is about to receive the image.
+    if (wantAlternate) {
+        renderPoseHistory_.CommitRenderedTexture(aerPlan.renderEye);
+    } else {
+        renderPoseHistory_.CommitRenderedTexture(EyeDelivery::kLeft);
+        renderPoseHistory_.CommitRenderedTexture(EyeDelivery::kRight);
+    }
+
     // --- Blit section: backbuffer -> eye texture(s) -------------------------
     double sectionStart = NowMs();
 
@@ -678,8 +698,10 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
         backend->SubmitEyeTexture(VR::Eye::Right, virtualScreen->GetEyeTexture(VR::Eye::Right));
     } else if (monoFallbackCopyBothEyes) {
         ID3D11Texture2D* monoTexture = hmdRenderer->GetEyeTexture(VR::Eye::Left);
-        backend->SubmitEyeTexture(VR::Eye::Left, monoTexture);
-        backend->SubmitEyeTexture(VR::Eye::Right, monoTexture);
+        const DirectX::XMMATRIX* monoPose =
+            renderPoseHistory_.GetTexturePose(EyeDelivery::kLeft);
+        backend->SubmitEyeTexture(VR::Eye::Left, monoTexture, monoPose);
+        backend->SubmitEyeTexture(VR::Eye::Right, monoTexture, monoPose);
     } else if (wantAlternate) {
         // AER eye delivery: submit BOTH layers every frame. The fresh eye's
         // layer carries this frame's new blit; the stale eye's layer
@@ -699,17 +721,27 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
                    "(fresh eye + the other eye's own previous frame; runtime reprojection covers timing)\n");
             loggedAerDelivery_ = true;
         }
+        const int leftTexture = aerPlan.layerTexture[EyeDelivery::kLeft];
+        const int rightTexture = aerPlan.layerTexture[EyeDelivery::kRight];
         backend->SubmitEyeTexture(
             VR::Eye::Left,
-            hmdRenderer->GetEyeTexture(static_cast<VR::Eye>(aerPlan.layerTexture[EyeDelivery::kLeft])));
+            hmdRenderer->GetEyeTexture(static_cast<VR::Eye>(leftTexture)),
+            renderPoseHistory_.GetTexturePose(leftTexture));
         backend->SubmitEyeTexture(
             VR::Eye::Right,
-            hmdRenderer->GetEyeTexture(static_cast<VR::Eye>(aerPlan.layerTexture[EyeDelivery::kRight])));
+            hmdRenderer->GetEyeTexture(static_cast<VR::Eye>(rightTexture)),
+            renderPoseHistory_.GetTexturePose(rightTexture));
     } else {
         // Z3D reprojection / plain stereo: both eyes were produced from this
         // frame's backbuffer, submit both.
-        backend->SubmitEyeTexture(VR::Eye::Left, hmdRenderer->GetEyeTexture(VR::Eye::Left));
-        backend->SubmitEyeTexture(VR::Eye::Right, hmdRenderer->GetEyeTexture(VR::Eye::Right));
+        backend->SubmitEyeTexture(
+            VR::Eye::Left,
+            hmdRenderer->GetEyeTexture(VR::Eye::Left),
+            renderPoseHistory_.GetTexturePose(EyeDelivery::kLeft));
+        backend->SubmitEyeTexture(
+            VR::Eye::Right,
+            hmdRenderer->GetEyeTexture(VR::Eye::Right),
+            renderPoseHistory_.GetTexturePose(EyeDelivery::kRight));
     }
 
     Perf::PerfStats::Get().AddSubmitMs(NowMs() - sectionStart);
@@ -758,6 +790,18 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     // on, and a permanently lost write would kill head tracking outright,
     // not just stereo.
 
+    // OpenVR waits for the pose used by the NEXT game render here, after the
+    // current image has been submitted with its previous pose. OpenXR already
+    // located its predicted views in BeginFrame.
+    const bool refreshedAfterFrameStart = backend->PrepareForCameraWrite();
+    if (refreshedAfterFrameStart && !recenterForCamera) {
+        // OpenVR refreshes here, after ResetZeroPose may have been requested
+        // by controls/overlay in this same frame. Its new pose is safe to
+        // consume immediately. OpenXR returns false and defers to BeginFrame.
+        recenterForCamera =
+            VR::GetStereoSettings().recenterRequested.exchange(false);
+    }
+
     // (3) LATE-LATCH the head pose immediately before the camera write.
     LatchHeadPose(backend);
 
@@ -768,33 +812,62 @@ HRESULT StereoEngine::OnPresent(IDXGISwapChain* pSwapChain, UINT syncInterval, U
     CameraMatrixSnapshot preSnapshot = {};
     bool havePreSnapshot = horizonLock && TryReadGameCameraSnapshot(preSnapshot);
 
-    if (vrCameraReady) {
+    bool cameraWriteSucceeded = false;
+    if (vrCameraAvailable) {
         // Scripted-cam path: the bridge executes the queued native ops on the
         // game main thread before the next render - same ordering contract as
         // the memory write below (see the write-timing comment above).
-        // Consume recenter before the camera update so the current frame is
-        // written from the new reference.  The old post-update order emitted
-        // one stale frame and then fed that jump through orientation smoothing.
-        if (stereoSettings.recenterRequested.exchange(false)) {
+        // Consume only a request carried from the previous frame, after
+        // BeginFrame has refreshed the runtime's rebased pose.
+        if (recenterForCamera) {
             vrCamera->Recenter();
         }
         if (wantAlternate) {
-            vrCamera->Update(static_cast<VR::Eye>(aerPlan.cameraWriteEye), gameState);
+            cameraWriteSucceeded = vrCamera->Update(
+                static_cast<VR::Eye>(aerPlan.cameraWriteEye),
+                gameState,
+                &headPoseLatched_);
         } else {
-            vrCamera->Update(VR::Eye::Left, gameState);
+            cameraWriteSucceeded = vrCamera->Update(
+                VR::Eye::Left, gameState, &headPoseLatched_);
         }
     } else if (cameraHook) {
-        if (stereoSettings.recenterRequested.exchange(false)) {
+        if (recenterForCamera) {
             cameraHook->RecenterPose();
         }
         if (wantAlternate && cameraHook->IsReady()) {
             // The game renders the OTHER eye next frame; write that eye's
             // camera now so it is in place before the next game render.
             cameraHook->Update(static_cast<VR::Eye>(aerPlan.cameraWriteEye), gameState);
+            cameraWriteSucceeded = true;
         } else {
             cameraHook->Update(VR::Eye::Left, gameState);
+            cameraWriteSucceeded = cameraHook->IsReady();
         }
 
+    }
+
+    // Preserve the runtime poses targeted by the camera write above. On the
+    // next completed Present they become the render poses of the new texture
+    // content. Store both in non-AER because depth reprojection produces both
+    // eyes from the same head-time sample.
+    const bool cameraWriteReady =
+        (vrCameraAvailable && vrCamera->IsEngaged()) ||
+        (!vrCameraAvailable && cameraHook && cameraHook->IsReady());
+    if (cameraWriteReady && cameraWriteSucceeded) {
+        auto recordEyePose = [&](VR::Eye eye) {
+            const DirectX::XMMATRIX view = backend->GetViewMatrix(eye);
+            const DirectX::XMMATRIX pose =
+                DirectX::XMMatrixInverse(nullptr, view);
+            renderPoseHistory_.RecordCameraWrite(
+                static_cast<int>(eye), pose);
+        };
+        if (wantAlternate) {
+            recordEyePose(static_cast<VR::Eye>(aerPlan.cameraWriteEye));
+        } else {
+            recordEyePose(VR::Eye::Left);
+            recordEyePose(VR::Eye::Right);
+        }
     }
 
     if (havePreSnapshot && ApplyVehicleHorizonLockCorrection(preSnapshot)) {

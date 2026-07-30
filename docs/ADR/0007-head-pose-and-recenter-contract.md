@@ -13,10 +13,18 @@ offsets compensated for asymmetric runtime projections.
 ## Decision
 
 - Sample the runtime pose as late as possible and never smooth the final
-  head-composed orientation.
-- Consume a recenter before the next camera write. A yaw-only OpenXR rebase
-  rotates around the current head position, while the scripted camera drops
-  its rotation and position references in the same frame.
+  head-composed orientation. Record the pose written for each eye and retain
+  it with that eye's persistent texture; a stale AER texture is submitted with
+  its own historical render pose, never relabelled with the current pose.
+- A yaw-only OpenXR rebase rotates around the current head position. Repeated
+  recenters compose with the existing rebase instead of replacing it.
+- A recenter raised after `BeginFrame` is consumed by the game camera only
+  after a fresh rebased pose is available (next OpenXR `BeginFrame`; the
+  post-submit `WaitGetPoses` on OpenVR). This deliberately trades one request
+  frame for a coherent runtime and camera reference.
+- GTA camera Euler rotation order 2 is `ROT_ZXY`: DirectX row-vector
+  composition `Rz * Rx * Ry`. Production conversion is guarded by an
+  independent expanded-matrix oracle test.
 - Derive image X/Y alignment from each eye's asymmetric OpenXR projection
   center. User offsets are fine trim only.
 - Interpret `worldScale` as apparent world size: tracked meters and runtime
@@ -26,9 +34,11 @@ offsets compensated for asymmetric runtime projections.
 
 ## Consequences
 
-- Head tracking and recentering respond immediately; game-owned camera motion
-  can still step at the engine rate, but it must be addressed separately from
-  the live headset pose.
+- Head tracking remains full-rate. OpenXR can reproject each fresh/stale eye
+  from the pose that actually rendered it; OpenVR obtains the next render pose
+  only after submitting the current image.
+- Recenter has a bounded one-frame handoff before the game-camera reference is
+  rebuilt from a fresh runtime pose.
 - Settings v2 clears obsolete X/Y compensation once and enables automatic
   projection alignment.
 - Runtime binary updates must deploy `OVRInject.dll` and `GTAVRBridge.asi` as

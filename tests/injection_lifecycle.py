@@ -637,7 +637,13 @@ def main():
                         help="explicit path to OVRInject.dll (default: newest known build output)")
     parser.add_argument("--keep-logs", action="store_true",
                         help="keep every per-run log dir (default: keep only failed runs)")
+    parser.add_argument("--report", default=REPORT_PATH,
+                        help="report output path (default: tests/lifecycle_report.txt)")
     args = parser.parse_args()
+    report_path = os.path.abspath(args.report)
+    report_dir = os.path.dirname(report_path)
+    if report_dir:
+        os.makedirs(report_dir, exist_ok=True)
 
     report_lines = []
     started = datetime.datetime.now()
@@ -660,7 +666,7 @@ def main():
         for path in missing:
             log_line(report_lines, "ERROR: missing prerequisite: %s" % path)
         log_line(report_lines, "Build Release|x64 of GTAVOVR.sln (and the D3D11Cube sample) first.")
-        with open(REPORT_PATH, "w") as f:
+        with open(report_path, "w") as f:
             f.write("\n".join(report_lines) + "\n")
         return 1
     args.ovrinject_resolved = ovrinject
@@ -697,9 +703,9 @@ def main():
     log_line(report_lines, "note: on a machine with no live VR runtime the expected hooked "
              "outcome is 'Failed to initialize VR' (inert pass-through), not a crash.")
 
-    with open(REPORT_PATH, "w") as f:
+    with open(report_path, "w") as f:
         f.write("\n".join(report_lines) + "\n")
-    print("\nreport written to %s" % REPORT_PATH, flush=True)
+    print("\nreport written to %s" % report_path, flush=True)
     return 0 if ok else 1
 
 

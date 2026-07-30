@@ -81,3 +81,40 @@ TEST(XRRecenter_MixedPitchYawRemovesYawOnly) {
     CHECK(forward.y != 0.0f);  // pitch remains
     CHECK(forward.z < 0.0f);
 }
+
+TEST(XRRecenter_RepeatedRecentersComposeInsteadOfReplacing) {
+    XrPosef rawFirst = IdentityPose();
+    XMVECTOR q = XMQuaternionRotationAxis(
+        XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), XMConvertToRadians(70.0f));
+    rawFirst.orientation = {
+        XMVectorGetX(q), XMVectorGetY(q), XMVectorGetZ(q), XMVectorGetW(q)};
+    rawFirst.position = {0.8f, 1.7f, -0.4f};
+
+    const XrPosef firstDelta = ComputeYawOnlyRecenterPose(rawFirst);
+    const XrPosef firstCentered = ComposePoses(firstDelta, rawFirst);
+    XMFLOAT3 forward = GetPoseForward(firstCentered);
+    CHECK_NEAR(forward.x, 0.0f, 1.0e-5f);
+    CHECK_NEAR(forward.z, -1.0f, 1.0e-5f);
+
+    XrPosef rawSecond = rawFirst;
+    q = XMQuaternionRotationAxis(
+        XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), XMConvertToRadians(100.0f));
+    rawSecond.orientation = {
+        XMVectorGetX(q), XMVectorGetY(q), XMVectorGetZ(q), XMVectorGetW(q)};
+
+    const XrPosef currentlyRebased = ComposePoses(firstDelta, rawSecond);
+    const XrPosef secondDelta = ComputeYawOnlyRecenterPose(currentlyRebased);
+    const XrPosef cumulative = ComposePoses(secondDelta, firstDelta);
+    const XrPosef secondCentered = ComposePoses(cumulative, rawSecond);
+    forward = GetPoseForward(secondCentered);
+    CHECK_NEAR(forward.x, 0.0f, 1.0e-5f);
+    CHECK_NEAR(forward.z, -1.0f, 1.0e-5f);
+    CHECK_NEAR(secondCentered.position.x, currentlyRebased.position.x, 1.0e-5f);
+    CHECK_NEAR(secondCentered.position.y, currentlyRebased.position.y, 1.0e-5f);
+    CHECK_NEAR(secondCentered.position.z, currentlyRebased.position.z, 1.0e-5f);
+
+    // The old replacement behavior leaves the raw first yaw (70 degrees).
+    const XrPosef replaced = ComposePoses(secondDelta, rawSecond);
+    const XMFLOAT3 wrongForward = GetPoseForward(replaced);
+    CHECK(fabsf(wrongForward.x) > 0.5f);
+}

@@ -1,4 +1,5 @@
 #include "VRCamera.hpp"
+#include "GtaCameraMath.hpp"
 #include "ShvNatives.hpp"
 #include "GtaGameState.hpp"
 #include "../Log.hpp"
@@ -10,21 +11,17 @@ namespace Game {
 
 namespace {
 
-constexpr float kDegToRad = 0.01745329251994329577f;
-constexpr float kRadToDeg = 57.295779513082320876f;
+constexpr float kDegToRad = kGtaDegreesToRadians;
+constexpr float kRadToDeg = kGtaRadiansToDegrees;
 
 // Frame conventions (AUDIT 2026-07-27, adversarially re-checked):
 //
 // GTA V world: x=east, y=north, z=up. Camera basis B uses the GAME matrix
 // layout: rows (right, forward, up) in GTA-world coords. GTA's native euler
-// convention is rotation ORDER 2: per the FiveM docs, "rotate around the
-// z-axis, then the y-axis and finally the x-axis" (extrinsic Z -> Y -> X).
+// convention is rotation ORDER 2 (ROT_ZXY): rotate around Z, then X, then Y.
 // Angles: rx=pitch about cam-right, ry=roll about cam-forward, rz=yaw about
-// world-up (0=north, positive=counterclockwise). Column form R = Rx*Ry*Rz,
-// which in row-vector DXM form is M = Rz(rz)*Ry(ry)*Rx(rx).
-// (The earlier ZYX/order-3 formulas, and the brief Ry*Rx*Rz variant, both
-// mis-decomposed mixed-angle bases - the "recenter shows the image sideways"
-// bug found in the audit. Verified against the FiveM rotation-order doc.)
+// world-up (0=north, positive=counterclockwise). DirectX row-vector form is
+// M = Rz(rz)*Rx(rx)*Ry(ry).
 //
 // XR head pose (XrPoseToMatrix): rows are the head's local axes in tracking
 // coords with x=right, y=up, z=BACK (OpenXR forward is -Z).
@@ -45,34 +42,6 @@ const DirectX::XMMATRIX kXrToCam =
                       0, -1, 0, 0,
                       0, 0, 0, 1);
 
-// GTA order-2 euler -> basis, rows (right, forward, up).
-// Column R = Rx*Ry*Rz, so row-vector M = Rz*Ry*Rx.
-DirectX::XMMATRIX GtaEulerToBasis(float rxDeg, float ryDeg, float rzDeg) {
-    using namespace DirectX;
-    return XMMatrixRotationZ(rzDeg * kDegToRad) *
-           XMMatrixRotationY(ryDeg * kDegToRad) *
-           XMMatrixRotationX(rxDeg * kDegToRad);
-}
-
-// Inverse (GTA order-2, M = Rz*Ry*Rx with rows right/forward/up):
-//   roll  = asin(up.x)
-//   pitch = atan2(-up.y, up.z)
-//   yaw   = atan2(-forward.x, right.x)
-void BasisToGtaEuler(const DirectX::XMMATRIX& b, float& rxDeg, float& ryDeg, float& rzDeg) {
-    const float rightX = b.r[0].m128_f32[0];
-    const float fwdX = b.r[1].m128_f32[0];
-    const float upX = b.r[2].m128_f32[0];
-    const float upY = b.r[2].m128_f32[1];
-    const float upZ = b.r[2].m128_f32[2];
-
-    float s = upX;
-    if (s > 1.0f) s = 1.0f;
-    if (s < -1.0f) s = -1.0f;
-    ryDeg = asinf(s) * kRadToDeg;
-    rxDeg = atan2f(-upY, upZ) * kRadToDeg;
-    rzDeg = atan2f(-fwdX, rightX) * kRadToDeg;
-}
-
 } // namespace
 
 VRCamera::VRCamera(VR::IVRBackend* backend) : backend_(backend) {}
@@ -92,22 +61,25 @@ void VRCamera::Recenter() {
     LOGSTR("VRCamera: recenter requested (references dropped)\n");
 }
 
-void VRCamera::Engage() {
+bool VRCamera::Engage() {
     auto& shv = ShvNatives::Get();
-    shv.CamSetActive(cam_, true);
-    shv.CamRender(cam_, true);
+    if (!shv.CamSetEnabled(cam_, true)) {
+        return false;
+    }
     engaged_ = true;
     hasRefRot_ = false;  // re-reference on resume so the view does not snap
     hasRefPos_ = false;
     haveLastHeadYaw_ = false;
     LOGSTRF("VRCamera: engaged (cam=%d)\n", cam_);
+    return true;
 }
 
 void VRCamera::Disengage() {
     if (!engaged_) return;
     auto& shv = ShvNatives::Get();
-    shv.CamRender(cam_, false);
-    shv.CamSetActive(cam_, false);
+    if (!shv.CamSetEnabled(cam_, false)) {
+        return;
+    }
     engaged_ = false;
     LOGSTR("VRCamera: disengaged (cutscene/loading)\n");
 }
@@ -116,17 +88,23 @@ void VRCamera::Shutdown() {
     if (cam_ == 0) return;
     auto& shv = ShvNatives::Get();
     if (engaged_) {
-        shv.CamRender(cam_, false);
-        shv.CamSetActive(cam_, false);
-        engaged_ = false;
+        if (shv.CamSetEnabled(cam_, false)) {
+            engaged_ = false;
+        }
     }
-    shv.CamDestroy(cam_);
+    if (!shv.CamDestroy(cam_)) {
+        LOGSTRF("VRCamera: bridge queue full while releasing cam=%d\n", cam_);
+    }
     LOGSTRF("VRCamera: released (cam=%d)\n", cam_);
     cam_ = 0;
     createRequested_ = false;
+    createRequestedAtMs_ = 0;
 }
 
-void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
+bool VRCamera::Update(
+    VR::Eye eye,
+    GtaGameState* gameState,
+    const DirectX::XMMATRIX* latchedHeadPose) {
     auto& shv = ShvNatives::Get();
     if (!shv.IsAvailable()) {
         // The bridge script thread may start AFTER our injection (ScriptHookV
@@ -137,34 +115,44 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
             lastBridgeRetryMs_ = nowMs;
             shv.Initialize();
         }
-        return;
+        return false;
     }
 
     // Cutscenes / loading / menus: give the camera back to the game.
     if (gameState && (gameState->IsCutsceneActive() || gameState->IsLoading() ||
                       gameState->IsInMenu())) {
         Disengage();
-        return;
+        return false;
     }
 
     // Scripted cam lifecycle: request once, adopt the handle when the bridge
     // reports it (op executes on its next tick).
     if (cam_ == 0) {
         if (!createRequested_) {
-            shv.CamCreate();
-            createRequested_ = true;
-            LOGSTR("VRCamera: scripted cam create requested\n");
+            if (shv.CamCreate()) {
+                createRequested_ = true;
+                createRequestedAtMs_ = GetTickCount64();
+                LOGSTR("VRCamera: scripted cam create requested\n");
+            }
         }
         int created = shv.LastCreatedCam();
         if (created != 0) {
             cam_ = created;
+            createRequestedAtMs_ = 0;
             LOGSTRF("VRCamera: scripted cam created (cam=%d)\n", cam_);
+        } else if (createRequested_ &&
+                   GetTickCount64() - createRequestedAtMs_ > 2000) {
+            createRequested_ = false;
+            createRequestedAtMs_ = 0;
+            LOGSTR("VRCamera: scripted cam create timed out - retrying\n");
         }
-        return;
+        return false;
     }
 
     if (!engaged_) {
-        Engage();
+        if (!Engage()) {
+            return false;
+        }
     }
 
     const ShvNatives::CamSnapshot snap = shv.Snapshot();
@@ -172,11 +160,13 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
     // Base pose from the gameplay camera (still engine-driven: follows the
     // player, vehicles, aiming - we only add the VR delta on top).
     const DirectX::XMMATRIX basis =
-        GtaEulerToBasis(snap.rotX, snap.rotY, snap.rotZ);
+        GtaOrder2EulerToBasis(snap.rotX, snap.rotY, snap.rotZ);
 
     // Head pose (late-latched by the stereo engine already).
-    DirectX::XMMATRIX headPose = backend_ ? backend_->GetHeadPoseMatrix()
-                                          : DirectX::XMMatrixIdentity();
+    DirectX::XMMATRIX headPose = latchedHeadPose
+        ? *latchedHeadPose
+        : (backend_ ? backend_->GetHeadPoseMatrix()
+                    : DirectX::XMMatrixIdentity());
     auto& view = VR::GetViewSettings();
     const float snapYaw = view.snapYawOffsetDeg.load();
     if (std::fabs(snapYaw) > 0.001f) {
@@ -389,13 +379,16 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         totalOffset);
 
     float rx, ry, rz;
-    BasisToGtaEuler(finalBasis, rx, ry, rz);
+    GtaOrder2BasisToEuler(finalBasis, rx, ry, rz);
 
-    shv.CamSetCoord(cam_,
-                    DirectX::XMVectorGetX(finalPos),
-                    DirectX::XMVectorGetY(finalPos),
-                    DirectX::XMVectorGetZ(finalPos));
-    shv.CamSetRot(cam_, rx, ry, rz);
+    if (!shv.CamSetTransform(
+            cam_,
+            DirectX::XMVectorGetX(finalPos),
+            DirectX::XMVectorGetY(finalPos),
+            DirectX::XMVectorGetZ(finalPos),
+            rx, ry, rz)) {
+        return false;
+    }
 
     // FOV: default = the XR per-eye vertical FOV, so the game frustum covers
     // the HMD's (paired with the angular crop in the blit - fixes the
@@ -433,10 +426,11 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
         // Published for the blit's angular crop (D3DHooks_VRManager).
         VR::GetRuntimeStats().activeFov.store(desiredFov);
         if (std::fabs(desiredFov - lastFov_) > 0.25f) {
-            shv.CamSetFov(cam_, desiredFov);
-            lastFov_ = desiredFov;
-            LOGSTRF("VRCamera: cam FOV -> %.1f (%s)\n", desiredFov,
-                    fovSettings.enabled.load() ? "override" : "XR-matched");
+            if (shv.CamSetFov(cam_, desiredFov)) {
+                lastFov_ = desiredFov;
+                LOGSTRF("VRCamera: cam FOV -> %.1f (%s)\n", desiredFov,
+                        fovSettings.enabled.load() ? "override" : "XR-matched");
+            }
         }
     }
 
@@ -458,6 +452,7 @@ void VRCamera::Update(VR::Eye eye, GtaGameState* gameState) {
                 updateCount_, snap.rotX, snap.rotY, snap.rotZ, rx, ry, rz, snap.sequence);
     }
     lastSnapSeq_ = snap.sequence;
+    return true;
 }
 
 } // namespace Game

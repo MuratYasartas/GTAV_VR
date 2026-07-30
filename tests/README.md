@@ -13,6 +13,10 @@ most "VR looks wrong" bugs are matrix bugs).
 | `TestProjection.cpp` | Projection oracle tests for `OVRInject::XR::XrFovToProjectionMatrixD3D` (D3D clip z in [0,1], OpenXR RH view space, forward -Z, +Y up). |
 | `TestEyeView.cpp` | Eye-view composition (`V = inverse(P_eye * P_head)`), IPD, handedness, and row-major `float[16]` shared-memory layout tests. Self-contained (only `<DirectXMath.h>`); must always pass standalone. |
 | `TestEyeDelivery.cpp` | AER eye-delivery state machine (`../OVRInject/Stereo/EyeDelivery.hpp`, header-only, dependency-free): per-frame layer→texture mapping on F/F+1/F+2, the no-cross-eye invariant (layer i always backed by eye texture i; single warmup exception after reset), missed-frame parity stability, and camera-write eye = next render eye. |
+| `TestGtaCameraMath.cpp` | Independent expanded-matrix oracle for GTA rotation order 2 (`ROT_ZXY`), inverse extraction and mixed-angle round trips. |
+| `TestRenderPoseHistory.cpp` | Verifies that fresh and stale AER textures retain the pose which actually rendered their content across completed and missed frames. |
+| `TestShvBridgeQueue.cpp` | Cross-process SPSC queue capacity, FIFO ordering and atomic batch publication for camera coord+rotation. |
+| `TestXRRecenter.cpp` | Yaw-only pivot behavior and cumulative repeated-recenter composition. |
 | `Stubs.cpp` | Link stubs for symbols `XRCore.cpp` drags in: mod logging (`LOGSTRF` & friends, no-ops) and the two OpenXR loader entry points (`xrResultToString`, `xrEnumerateInstanceExtensionProperties`). The math under test never calls them. |
 | `run_tests.bat` | Build + run (see below). |
 
@@ -50,7 +54,7 @@ Phase 9 harness for test-matrix row A4: inject -> hook/inert -> terminate,
 looped N times against the D3D11Cube slice. Pure Python 3 standard library.
 
 ```
-python tests/injection_lifecycle.py [--count N] [--mode MODE] [--keep-logs]
+python tests/injection_lifecycle.py [--count N] [--mode MODE] [--keep-logs] [--report PATH]
 ```
 
 Per iteration it starts `D3D11Cube.exe` with `GTAVR_LOG_DIR=<fresh temp dir>`,

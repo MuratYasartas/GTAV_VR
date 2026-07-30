@@ -4,7 +4,6 @@
 namespace OVRInject {
 namespace Game {
 
-static constexpr uint32_t kBridgeMagic = 0x32564847u; // 'GHV2'
 static constexpr const char* kBridgeMapping = "GTAVR_SHV_BRIDGE";
 
 ShvNatives& ShvNatives::Get() {
@@ -20,15 +19,16 @@ bool ShvNatives::Initialize() {
         LOGSTR("ShvNatives: GTAVRBridge channel not found (bridge .asi not loaded)\n");
         return false;
     }
-    state_ = static_cast<BridgeState*>(
-        MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(BridgeState)));
+    state_ = static_cast<ShvBridge::BridgeState*>(
+        MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0,
+                      sizeof(ShvBridge::BridgeState)));
     if (!state_) {
         LOGSTR("ShvNatives: failed to map GTAVRBridge channel\n");
         CloseHandle(mapping_);
         mapping_ = nullptr;
         return false;
     }
-    if (state_->magic != kBridgeMagic) {
+    if (state_->magic != ShvBridge::kMagic) {
         LOGSTRF("ShvNatives: bad bridge magic 0x%08X - version mismatch\n", state_->magic);
         UnmapViewOfFile(state_);
         CloseHandle(mapping_);
@@ -51,34 +51,86 @@ void ShvNatives::Shutdown() {
     }
 }
 
-void ShvNatives::PushOp(uint32_t type, int cam, float a, float b, float c) {
-    if (!state_) return;
-    uint32_t tail = state_->qTail;
-    uint32_t next = (tail + 1) % 64;
-    if (next == state_->qHead) return; // full - drop (re-issued every frame)
-    BridgeOp& op = state_->queue[tail];
-    op.type = type;
-    op.cam = cam;
-    op.a = a;
-    op.b = b;
-    op.c = c;
-    std::atomic_thread_fence(std::memory_order_release);
-    state_->qTail = next;
+bool ShvNatives::IsAvailable() const {
+    return state_ && ShvBridge::LoadAcquire(&state_->bridgeAlive) != 0;
+}
+
+int ShvNatives::LastCreatedCam() const {
+    return state_ ? static_cast<int32_t>(
+        ShvBridge::LoadAcquire(
+            reinterpret_cast<const uint32_t*>(&state_->lastCreateResult))) : 0;
+}
+
+bool ShvNatives::PushOps(
+    const ShvBridge::BridgeOp* operations, uint32_t count) {
+    if (!IsAvailable()) return false;
+    const bool pushed = ShvBridge::TryPushBatch(state_, operations, count);
+    if (!pushed) {
+        const uint32_t seq = ShvBridge::LoadAcquire(&state_->stateSeq);
+        uint32_t previous = lastLoggedSeq_.load();
+        if (seq - previous >= 120 &&
+            lastLoggedSeq_.compare_exchange_strong(previous, seq)) {
+            LOGSTR("ShvNatives: bridge queue full - operation deferred\n");
+        }
+    }
+    return pushed;
+}
+
+bool ShvNatives::PushOp(
+    uint32_t type, int cam, float a, float b, float c) {
+    const ShvBridge::BridgeOp operation = {type, cam, a, b, c};
+    return PushOps(&operation, 1);
 }
 
 void ShvNatives::SetRawYawPitch(float yawDeg, float pitchDeg) {
-    PushOp(OpSetRawYawPitch, 0, yawDeg, pitchDeg, 0.0f);
+    PushOp(ShvBridge::OpSetRawYawPitch, 0, yawDeg, pitchDeg, 0.0f);
 }
 void ShvNatives::SetRelativeHeadingPitch(float headingDeg, float pitchDeg, float clampValue) {
-    PushOp(OpSetRelativeHeadingPitch, 0, headingDeg, pitchDeg, clampValue);
+    PushOp(ShvBridge::OpSetRelativeHeadingPitch, 0, headingDeg, pitchDeg, clampValue);
 }
-void ShvNatives::CamCreate() { PushOp(OpCamCreate, 0, 0, 0, 0); }
-void ShvNatives::CamSetCoord(int cam, float x, float y, float z) { PushOp(OpCamSetCoord, cam, x, y, z); }
-void ShvNatives::CamSetRot(int cam, float x, float y, float z) { PushOp(OpCamSetRot, cam, x, y, z); }
-void ShvNatives::CamSetFov(int cam, float fov) { PushOp(OpCamSetFov, cam, fov, 0, 0); }
-void ShvNatives::CamSetActive(int cam, bool active) { PushOp(OpCamSetActive, cam, active ? 1.0f : 0.0f, 0, 0); }
-void ShvNatives::CamRender(int cam, bool render) { PushOp(OpCamRender, cam, render ? 1.0f : 0.0f, 0, 0); }
-void ShvNatives::CamDestroy(int cam) { PushOp(OpCamDestroy, cam, 1.0f, 0, 0); }
+bool ShvNatives::CamCreate() {
+    if (!IsAvailable()) {
+        return false;
+    }
+    // A previous scripted camera may have been destroyed while the bridge
+    // retained its last result. Clear it before publishing a new request so
+    // VRCamera cannot adopt a stale handle during the request/response gap.
+    InterlockedExchange(
+        reinterpret_cast<volatile LONG*>(&state_->lastCreateResult), 0);
+    return PushOp(ShvBridge::OpCamCreate, 0, 0, 0, 0);
+}
+
+bool ShvNatives::CamSetTransform(
+    int cam,
+    float x, float y, float z,
+    float pitch, float roll, float yaw) {
+    const ShvBridge::BridgeOp operations[] = {
+        {ShvBridge::OpCamSetCoord, cam, x, y, z},
+        {ShvBridge::OpCamSetRot, cam, pitch, roll, yaw},
+    };
+    return PushOps(operations, 2);
+}
+
+bool ShvNatives::CamSetFov(int cam, float fov) {
+    return PushOp(ShvBridge::OpCamSetFov, cam, fov, 0, 0);
+}
+
+bool ShvNatives::CamSetEnabled(int cam, bool enabled) {
+    const float value = enabled ? 1.0f : 0.0f;
+    const ShvBridge::BridgeOp operations[] = {
+        enabled
+            ? ShvBridge::BridgeOp{ShvBridge::OpCamSetActive, cam, value, 0, 0}
+            : ShvBridge::BridgeOp{ShvBridge::OpCamRender, cam, value, 0, 0},
+        enabled
+            ? ShvBridge::BridgeOp{ShvBridge::OpCamRender, cam, value, 0, 0}
+            : ShvBridge::BridgeOp{ShvBridge::OpCamSetActive, cam, value, 0, 0},
+    };
+    return PushOps(operations, 2);
+}
+
+bool ShvNatives::CamDestroy(int cam) {
+    return PushOp(ShvBridge::OpCamDestroy, cam, 1.0f, 0, 0);
+}
 
 } // namespace Game
 } // namespace OVRInject

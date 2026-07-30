@@ -439,6 +439,9 @@ bool XRHMDSupport::BeginFrame() {
         return false;
     }
 
+    submitted_view_pose_valid_[0] = false;
+    submitted_view_pose_valid_[1] = false;
+
     // Update view poses
     if (should_render_) {
         XrViewState viewState;
@@ -488,7 +491,9 @@ void XRHMDSupport::EndFrame() {
             const auto& viewInfo = view_manager_->GetView(eye);
             auto* swapchain = swapchains_->GetSwapchain(eye);
 
-            projection_views_[i].pose = viewInfo.view.pose;
+            projection_views_[i].pose = submitted_view_pose_valid_[i]
+                ? submitted_view_poses_[i]
+                : viewInfo.view.pose;
             projection_views_[i].fov = viewInfo.view.fov;
             projection_views_[i].subImage.swapchain = swapchain->GetHandle();
             projection_views_[i].subImage.imageRect.offset = {0, 0};
@@ -521,24 +526,33 @@ void XRHMDSupport::EndFrame() {
     should_render_ = false;
 }
 
-void XRHMDSupport::SubmitFrameTexture(int eye_index, ID3D11Texture2D* texture, const unsigned int& time) {
+void XRHMDSupport::SubmitFrameTexture(
+    int eye_index,
+    ID3D11Texture2D* texture,
+    const unsigned int& time,
+    const XMMATRIX* rendered_pose) {
+    (void)time;
     if (!IsInitialized() || !swapchains_ || !should_render_ || !views_valid_) return;
 
     XR::Eye eye = static_cast<XR::Eye>(eye_index);
-    CopyTextureToSwapchain(texture, eye);
+    const bool copied = CopyTextureToSwapchain(texture, eye);
+    if (copied && eye_index >= 0 && eye_index < 2 && rendered_pose) {
+        submitted_view_poses_[eye_index] = XR::MatrixToXrPose(*rendered_pose);
+        submitted_view_pose_valid_[eye_index] = true;
+    }
 }
 
-void XRHMDSupport::CopyTextureToSwapchain(ID3D11Texture2D* source, XR::Eye eye) {
-    if (!source || !swapchains_) return;
+bool XRHMDSupport::CopyTextureToSwapchain(ID3D11Texture2D* source, XR::Eye eye) {
+    if (!source || !swapchains_) return false;
 
     auto* swapchain = swapchains_->GetSwapchain(eye);
-    if (!swapchain) return;
+    if (!swapchain) return false;
 
     static bool loggedFormats = false;
 
     // Acquire swapchain image
     uint32_t imageIndex;
-    if (!swapchain->AcquireImage(imageIndex)) return;
+    if (!swapchain->AcquireImage(imageIndex)) return false;
     if (!swapchain->WaitImage(kSwapchainWaitTimeoutNs)) {
         static bool loggedWaitTimeout = false;
         if (!loggedWaitTimeout) {
@@ -546,14 +560,14 @@ void XRHMDSupport::CopyTextureToSwapchain(ID3D11Texture2D* source, XR::Eye eye) 
             loggedWaitTimeout = true;
         }
         swapchain->ReleaseImage();
-        return;
+        return false;
     }
 
     // Get the swapchain texture
     ID3D11Texture2D* dest = swapchain->GetCurrentTexture();
     if (!dest) {
         swapchain->ReleaseImage();
-        return;
+        return false;
     }
 
     // Get source and dest descriptions
@@ -587,6 +601,7 @@ void XRHMDSupport::CopyTextureToSwapchain(ID3D11Texture2D* source, XR::Eye eye) 
 
     // Release swapchain image
     swapchain->ReleaseImage();
+    return true;
 }
 
 //-----------------------------------------------------------------------------

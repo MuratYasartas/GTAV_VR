@@ -96,6 +96,9 @@
     <ClCompile Include="TestEyeDelivery.cpp" />
     <ClCompile Include="TestImageFit.cpp" />
     <ClCompile Include="TestSharedSettings.cpp" />
+    <ClCompile Include="TestGtaCameraMath.cpp" />
+    <ClCompile Include="TestRenderPoseHistory.cpp" />
+    <ClCompile Include="TestShvBridgeQueue.cpp" />
     <ClCompile Include="TestXRRecenter.cpp" />
     <ClCompile Include="TestBuildManifest.cpp" />
     <ClCompile Include="Stubs.cpp" />
@@ -107,6 +110,9 @@
     <ClInclude Include="TestFramework.hpp" />
     <ClInclude Include="..\OVRInject\Stereo\EyeDelivery.hpp" />
     <ClInclude Include="..\OVRInject\Stereo\ImageFit.hpp" />
+    <ClInclude Include="..\OVRInject\Stereo\RenderPoseHistory.hpp" />
+    <ClInclude Include="..\OVRInject\Game\GtaCameraMath.hpp" />
+    <ClInclude Include="..\OVRInject\Game\ShvBridgeShared.hpp" />
     <ClInclude Include="..\OVRInject\OpenXR\XRRecenter.hpp" />
     <ClInclude Include="..\OVRInject\Game\BuildManifest.hpp" />
   </ItemGroup>

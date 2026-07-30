@@ -9,63 +9,6 @@ namespace XR {
 
 namespace {
 
-static XrQuaternionf MultiplyQuat(const XrQuaternionf& a, const XrQuaternionf& b) {
-    XMVECTOR qa = XMVectorSet(a.x, a.y, a.z, a.w);
-    XMVECTOR qb = XMVectorSet(b.x, b.y, b.z, b.w);
-    // XMQuaternionMultiply(Q1,Q2) returns the concatenation Q1 followed by
-    // Q2 (algebraically Q2*Q1). Pose composition below is a*b, matching
-    // position = a.position + rotate(a, b.position), so reverse the API
-    // arguments to obtain algebraic qa*qb.
-    XMVECTOR qr = XMQuaternionMultiply(qb, qa);
-    XrQuaternionf out = {};
-    out.x = XMVectorGetX(qr);
-    out.y = XMVectorGetY(qr);
-    out.z = XMVectorGetZ(qr);
-    out.w = XMVectorGetW(qr);
-    return out;
-}
-
-static XrQuaternionf InverseQuat(const XrQuaternionf& q) {
-    XMVECTOR v = XMVectorSet(q.x, q.y, q.z, q.w);
-    v = XMQuaternionInverse(v);
-    XrQuaternionf out = {};
-    out.x = XMVectorGetX(v);
-    out.y = XMVectorGetY(v);
-    out.z = XMVectorGetZ(v);
-    out.w = XMVectorGetW(v);
-    return out;
-}
-
-static XrVector3f RotateVector(const XrQuaternionf& q, const XrVector3f& v) {
-    XMVECTOR qv = XMVectorSet(q.x, q.y, q.z, q.w);
-    XMVECTOR vv = XMVectorSet(v.x, v.y, v.z, 0.0f);
-    XMVECTOR rv = XMVector3Rotate(vv, qv);
-    XrVector3f out = {};
-    out.x = XMVectorGetX(rv);
-    out.y = XMVectorGetY(rv);
-    out.z = XMVectorGetZ(rv);
-    return out;
-}
-
-static XrPosef MultiplyPose(const XrPosef& a, const XrPosef& b) {
-    XrPosef out = IdentityPose();
-    out.orientation = MultiplyQuat(a.orientation, b.orientation);
-    XrVector3f rotated = RotateVector(a.orientation, b.position);
-    out.position.x = a.position.x + rotated.x;
-    out.position.y = a.position.y + rotated.y;
-    out.position.z = a.position.z + rotated.z;
-    return out;
-}
-
-static XrPosef InvertPose(const XrPosef& pose) {
-    XrPosef out = IdentityPose();
-    out.orientation = InverseQuat(pose.orientation);
-    XrVector3f neg = {-pose.position.x, -pose.position.y, -pose.position.z};
-    XrVector3f rotated = RotateVector(out.orientation, neg);
-    out.position = rotated;
-    return out;
-}
-
 static void NormalizePose(XrPosef& pose) {
     XMVECTOR q = XMVectorSet(pose.orientation.x, pose.orientation.y,
                              pose.orientation.z, pose.orientation.w);
@@ -447,7 +390,7 @@ bool XRViewManager::LocateViews(XrTime display_time, XrViewState& view_state) {
 
     for (auto& view : trackingViews) {
         if (recenter_active_) {
-            view.pose = MultiplyPose(recenter_pose_, view.pose);
+            view.pose = ComposePoses(recenter_pose_, view.pose);
         }
         NormalizePose(view.pose);
     }
@@ -477,7 +420,7 @@ bool XRViewManager::LocateViews(XrTime display_time, XrViewState& view_state) {
         }
         for (auto& view : renderViews) {
             if (recenter_active_) {
-                view.pose = MultiplyPose(recenter_pose_, view.pose);
+                view.pose = ComposePoses(recenter_pose_, view.pose);
             }
             NormalizePose(view.pose);
         }
@@ -501,12 +444,18 @@ void XRViewManager::Recenter(bool yaw_only) {
     }
 
     if (yaw_only) {
-        recenter_pose_ = ComputeYawOnlyRecenterPose(head_pose_);
+        const XrPosef delta = ComputeYawOnlyRecenterPose(head_pose_);
+        recenter_pose_ = recenter_active_
+            ? ComposePoses(delta, recenter_pose_)
+            : delta;
         recenter_active_ = true;
         return;
     }
 
-    recenter_pose_ = InvertPose(head_pose_);
+    const XrPosef delta = InvertPose(head_pose_);
+    recenter_pose_ = recenter_active_
+        ? ComposePoses(delta, recenter_pose_)
+        : delta;
     recenter_active_ = true;
 }
 

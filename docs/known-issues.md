@@ -65,7 +65,9 @@ one release for the record) · ❓ UNVERIFIED
 - ⚪ **Backend/verbose settings not reaching an already-running game** —
   env vars (`GTAVR_BACKEND`, `GTAVR_VERBOSE`) only propagate to processes we
   spawn. Backend is now also read from `gtavr_settings.ini [Runtime] backend=`
-  (the panel writes it before injecting). 2026-07-26
+  (the panel writes it before injecting). The settings fallback now resolves
+  beside the loaded `OVRInject.dll`, not from GTA's process working directory.
+  2026-07-30
 - ❓ **OpenXR session can sit pre-READY forever** (observed live with the
   Pimax runtime: session created, overlay initialized, zero
   "OpenXR session state" lines → `xrBeginSession` never runs → controllers
@@ -91,7 +93,9 @@ one release for the record) · ❓ UNVERIFIED
   texture holds that eye's own render, and both eye layers are submitted
   every frame — fresh eye + the stale eye's own previous frame, never the
   other eye's (`OVRInject/Stereo/EyeDelivery.hpp`, driven by
-  `StereoEngine::OnPresent`). Runtime ATW/ASW reprojects the stale eye.
+  `StereoEngine::OnPresent`). Each texture now retains the runtime pose that
+  actually rendered it, so OpenXR ATW/ASW no longer receives stale content
+  labelled as the current pose.
   Until validated in a real headset this remains UNVERIFIED; the mono
   fallback (camera hook not ready) intentionally stays mono. Z3D depth
   reprojection remains the fallback mode. 2026-07-25

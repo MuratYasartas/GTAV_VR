@@ -17,44 +17,13 @@
 #include <atomic>
 
 #include "main.h"
+#include "../OVRInject/Game/ShvBridgeShared.hpp"
 
-#define GTAVR_BRIDGE_MAGIC 0x32564847u // 'GHV2' - v2 adds pedHead to the ABI
 #define GTAVR_BRIDGE_MAPPING "GTAVR_SHV_BRIDGE"
 
-struct BridgeOp {
-    uint32_t type;
-    int32_t cam;
-    float a, b, c;
-};
-
-struct BridgeState {
-    uint32_t magic;
-    uint32_t stateSeq;
-    float coord[3];
-    float rot[3];
-    float fov;
-    float relHeading;
-    float relPitch;
-    float pedHead[3];  // player head-bone world coords (SKEL_Head)
-    uint32_t qHead;
-    uint32_t qTail;
-    int32_t lastCreateResult;
-    uint32_t bridgeAlive;
-    BridgeOp queue[64];
-};
-static_assert(sizeof(BridgeState) == 1352, "GTAVR bridge ABI changed; bump magic and client layout");
-
-enum OpType : uint32_t {
-    OpSetRawYawPitch = 1,
-    OpSetRelativeHeadingPitch,
-    OpCamCreate,
-    OpCamSetCoord,
-    OpCamSetRot,
-    OpCamSetFov,
-    OpCamSetActive,
-    OpCamRender,
-    OpCamDestroy,
-};
+using OVRInject::Game::ShvBridge::BridgeOp;
+using OVRInject::Game::ShvBridge::BridgeState;
+using namespace OVRInject::Game::ShvBridge;
 
 static std::atomic<bool> g_stop{false};
 static FILE* g_log = nullptr;
@@ -192,8 +161,14 @@ static void ExecuteOp(BridgeState* s, const BridgeOp& op) {
         nativeInit(H_CREATE_CAM);
         nativePush64(reinterpret_cast<uint64_t>("DEFAULT_SCRIPTED_CAMERA"));
         nativePush64(0);
-        s->lastCreateResult = static_cast<int32_t>(*nativeCall());
-        Log("CREATE_CAM -> %d\n", s->lastCreateResult);
+        if (uint64_t* result = nativeCall()) {
+            InterlockedExchange(
+                reinterpret_cast<volatile LONG*>(&s->lastCreateResult),
+                static_cast<LONG>(*result));
+            Log("CREATE_CAM -> %d\n", s->lastCreateResult);
+        } else {
+            Log("CREATE_CAM failed: nativeCall returned null\n");
+        }
         break;
     case OpCamSetCoord:
         nativeInit(H_SET_CAM_COORD);
@@ -259,20 +234,18 @@ static void ScriptMain() {
         return;
     }
     ZeroMemory(s, sizeof(*s));
-    s->magic = GTAVR_BRIDGE_MAGIC;
-    s->bridgeAlive = 1;
+    s->magic = kMagic;
+    StoreRelease(&s->bridgeAlive, 1);
     Log("GTAVRBridge: script thread up, channel ready\n");
 
     uint32_t logTick = 0;
     while (!g_stop.load()) {
         UpdateSnapshot(s);
 
-        uint32_t head = s->qHead;
-        while (head != s->qTail) {
-            ExecuteOp(s, s->queue[head % 64]);
-            head = (head + 1) % 64;
+        BridgeOp operation = {};
+        while (TryPop(s, operation)) {
+            ExecuteOp(s, operation);
         }
-        s->qHead = head;
 
         if (++logTick % 240 == 1) {
             Log("cam coord=(%.1f, %.1f, %.1f) rot=(%.1f, %.1f, %.1f) fov=%.1f relH=%.2f relP=%.2f\n",
@@ -282,7 +255,7 @@ static void ScriptMain() {
         WAIT(0);
     }
 
-    s->bridgeAlive = 0;
+    StoreRelease(&s->bridgeAlive, 0);
     UnmapViewOfFile(s);
     CloseHandle(mapping);
     Log("GTAVRBridge: stopped\n");

@@ -13,9 +13,7 @@
 //   ry = roll  about cam-forward
 //   rz = yaw   about world-up  (0 = north/+Y, positive = counterclockwise)
 // The internal composition frame mirrors GtaCameraHook: matrix rows are
-// (right, up, forward) with GTA-world values. Euler<->matrix conversion is
-// GTA-native and self-consistent, so a convention mistake can only mirror
-// the head delta (one-line sign fix), never corrupt the base pose.
+// (right, forward, up) with GTA-world values. Order 2 is ROT_ZXY.
 
 #include "../VR/IVRBackend.hpp"
 #include <DirectXMath.h>
@@ -38,7 +36,10 @@ public:
 
     // One update per frame from the stereo engine's camera-write section.
     // eye = the eye the NEXT game render should carry (AER parity).
-    void Update(VR::Eye eye, GtaGameState* gameState);
+    bool Update(
+        VR::Eye eye,
+        GtaGameState* gameState,
+        const DirectX::XMMATRIX* latchedHeadPose = nullptr);
 
     // Re-reference the head pose (recenter hotkey).
     void Recenter();
@@ -47,12 +48,13 @@ public:
     void Shutdown();
 
 private:
-    void Engage();
+    bool Engage();
     void Disengage();
 
     VR::IVRBackend* backend_;
     int cam_ = 0;
     bool createRequested_ = false;
+    uint64_t createRequestedAtMs_ = 0;
     bool engaged_ = false;
 
     // Reference (recenter) pose

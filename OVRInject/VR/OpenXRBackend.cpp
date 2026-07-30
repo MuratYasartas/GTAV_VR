@@ -110,9 +110,13 @@ void OpenXRBackend::EndFrame() {
     hmd_support_->EndFrame();
 }
 
-void OpenXRBackend::SubmitEyeTexture(Eye eye, ID3D11Texture2D* texture) {
+void OpenXRBackend::SubmitEyeTexture(
+    Eye eye,
+    ID3D11Texture2D* texture,
+    const XMMATRIX* renderedPose) {
     if (!hmd_support_) return;
-    hmd_support_->SubmitFrameTexture(static_cast<int>(eye), texture, 0);
+    hmd_support_->SubmitFrameTexture(
+        static_cast<int>(eye), texture, 0, renderedPose);
 }
 
 bool OpenXRBackend::IsOverlayVisible() const {

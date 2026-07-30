@@ -141,12 +141,15 @@ Per Present (game render thread):
   plan = EyeDelivery.Plan(frameIndex)         // AER: which eye is fresh, per-layer
                                               // texture mapping (layer i <- eye tex i)
   blit backbuffer → fresh eye texture         // stale eye keeps its OWN previous frame
+  texturePose[freshEye] = pendingCameraPose   // pose which actually rendered this image
   submit BOTH layers every EndFrame           // fresh eye new frame, stale eye its own
-                                              // last frame (runtime ATW/ASW covers it)
+                                              // last frame + its own render pose
   original Present (desktop mirror)
+  backend->PrepareForCameraWrite()            // OpenVR WaitGetPoses; OpenXR already fresh
   pose = backend->LateLatchPose()             // sampled NOW, not at game-camera time
   plugin->ApplyCamera(nextEye, pose, ipd)     // LATEST safe point: right after Present
                                               // returns, before the next game render
+  pendingCameraPose[nextEye] = runtimeEyePose // consumed with next completed render
   PerfStats.Record(frame)                     // p99 ring buffer, Phase 8
 ```
 
@@ -160,8 +163,9 @@ clean give-up to mono, cheap periodic retry); the render thread adopts in O(1).
   presentation cadence. Only game-owned/base motion may be smoothed; filtering the
   final camera also filters the user's real head and is prohibited.
 - **Yaw recenter pivots at the current head position**, not the tracking-space origin.
-  Runtime recenter and the game-camera reference are consumed before the next camera
-  write, so the first post-recenter frame is already centered.
+  Repeated requests compose. A request raised after pose location is carried to the
+  next fresh pose before rebuilding the game-camera reference; stale cached tracking
+  is never captured as the new center.
 - **World scale is physical and inverse:** tracked translation and runtime IPD are
   multiplied by `1 / worldScale`; manual camera trim remains in game meters.
 - **Image X/Y alignment is projection-derived by default.** The asymmetric OpenXR
@@ -169,8 +173,10 @@ clean give-up to mono, cheap periodic retry); the render thread adopts in O(1).
   are fine trim on top, not required calibration.
 - **Projection always from runtime FOV** (`XrFovToProjectionMatrixD3D`), asymmetric,
   never the game's own projection. Near/far per-title (manifest).
-- **Late-latch**: pose sampled immediately before camera write + submission. The game
-  camera update time is arbitrarily early; latching there ships ~40 ms of latency.
+- **Late-latch and pose ownership**: pose is sampled immediately before the camera
+  write. Each persistent eye texture retains that render pose until overwritten, and
+  OpenXR submits the layer with the retained pose instead of the current tracking pose.
+- **GTA Euler order 2**: `ROT_ZXY`; row-vector DirectX basis is `Rz * Rx * Ry`.
 - **Culling**: the game culls against its own frustum. Mitigation v1: FOV override via
   plugin (`GtaCameraFov`) per camera type (LukeRoss's `FOVUni` lesson); full culling-frustum
   patching is a per-title RE task tracked in known-issues. Shadow/LOD artifacts documented.
